@@ -529,7 +529,7 @@ fn render(&self, frame: &mut Frame, area: Rect) {
 - [Ratatui Docs](https://ratatui.rs/)
 - [Crossterm Docs](https://docs.rs/crossterm/)
 - [Examples](./examples/)
-- [Tutorial](./TUTORIAL.md)
+- [QUICKSTART.md](./QUICKSTART.md)
 
 ---
 
