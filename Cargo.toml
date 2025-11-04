@@ -1,0 +1,57 @@
+[package]
+name = "tui-base-framework"
+version = "0.1.0"
+edition = "2021"
+authors = ["binbandit <crazywolf132@gmail.com>"]
+description = "A minimal, extensible TUI template built with Ratatui and Tokio"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/binbandit/tui-base-framework"
+homepage = "https://github.com/binbandit/tui-base-framework"
+readme = "README.md"
+keywords = ["tui", "terminal", "ratatui", "template", "component"]
+categories = ["command-line-interface", "asynchronous"]
+rust-version = "1.70"
+
+# When using this template, update the fields above with your project info:
+# - name: Your project name
+# - authors: Your name and email
+# - description: What your app does
+# - repository: Your repository URL
+# - homepage: Your project homepage
+#
+# Note: If you don't need a library interface, you can remove src/lib.rs
+# and this will become a binary-only project.
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.29"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+
+[[example]]
+name = "hello_world"
+path = "examples/hello_world.rs"
+
+[[example]]
+name = "counter"
+path = "examples/counter.rs"
+
+[[example]]
+name = "text_input"
+path = "examples/text_input.rs"
+
+[[example]]
+name = "list_selector"
+path = "examples/list_selector.rs"
+
+[[example]]
+name = "layout_demo"
+path = "examples/layout_demo.rs"
+
+[[example]]
+name = "tabs"
+path = "examples/tabs.rs"
+
+[[example]]
+name = "progress"
+path = "examples/progress.rs"
