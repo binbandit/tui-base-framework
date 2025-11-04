@@ -262,7 +262,7 @@ Then you can:
 2. **Copy it**: `cp examples/counter.rs src/main.rs`
 3. **Run it**: `cargo run`
 4. **Customize** for your needs
-5. **Clean up** when ready: `rm -rf examples/ src/examples/`
+5. **Clean up** when ready: `rm -rf examples/ src/examples/ src/examples.rs`
 
 ## Resources
 

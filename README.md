@@ -65,7 +65,7 @@ cargo run --example progress      # Animations (100 lines)
 
 1. Update `Cargo.toml` with your project name
 2. Modify `src/main.rs` for your needs
-3. Remove examples when ready: `rm -rf examples/ src/examples/`
+3. Remove examples when ready: `rm -rf examples/ src/examples/ src/examples.rs`
 
 ## Documentation
 
@@ -245,53 +245,25 @@ The framework provides the foundation. You build the features. Components compos
 ```
 tui-base-framework/
 ├── src/
-│   ├── lib.rs              # Core framework (customize or remove)
-│   ├── app.rs              # Application lifecycle
-│   ├── component.rs        # Component trait
-│   ├── event.rs            # Event types
-│   ├── message.rs          # Message types
-│   ├── terminal.rs         # Terminal management
-│   └── examples/           # Example components (remove when ready)
-│       ├── counter.rs
-│       ├── hello_world.rs
-│       ├── text_input.rs
-│       ├── list_selector.rs
-│       ├── layout_demo.rs
-│       ├── tabs.rs
-│       └── progress.rs
-├── examples/               # Runnable examples (remove when ready)
-│   ├── counter.rs
+│   ├── app.rs           # ✅ Keep - Application lifecycle
+│   ├── component.rs     # ✅ Keep - Component trait
+│   ├── event.rs         # ✅ Keep - Event types
+│   ├── message.rs       # ✅ Keep - Message types
+│   ├── terminal.rs      # ✅ Keep - Terminal management
+│   ├── lib.rs           # ⚙️  Optional - Remove if binary-only
+│   ├── examples.rs      # ❌ Remove - Example module
+│   └── examples/        # ❌ Remove - Example implementations
+├── examples/            # ❌ Remove - After learning
 │   ├── hello_world.rs
-│   ├── text_input.rs
-│   ├── list_selector.rs
-│   ├── layout_demo.rs
-│   ├── tabs.rs
-│   └── progress.rs
-├── QUICKSTART.md           # 5-minute getting started guide
-├── TUTORIAL.md             # Build a todo app from scratch
-├── EXAMPLES.md             # Detailed example walkthroughs
-├── LEARNING_PATH.md        # Structured learning progression
-├── CHEATSHEET.md           # Quick reference
-└── Cargo.toml
+│   ├── counter.rs
+│   └── ... (7 total)
+├── README.md            # 📝 Replace with your own
+├── QUICKSTART.md        # 📚 Keep as reference
+├── CHEATSHEET.md        # 📚 Keep as reference
+└── Cargo.toml           # ⚙️  Update with your info
 ```
 
-## What to Keep, What to Remove
-
-### Keep These:
-- `src/app.rs`, `src/component.rs`, `src/event.rs`, `src/message.rs`, `src/terminal.rs` - Core framework
-- Documentation files - Reference while building
-- `Cargo.toml` - Update with your project name
-
-### Remove When Ready:
-- `examples/` directory - After you've learned from them
-- `src/examples/` directory - Example component implementations
-- Documentation files - Once you don't need them
-- This README - Replace with your own
-
-### Customize:
-- `src/lib.rs` - Modify or remove based on your needs
-- `Cargo.toml` - Change name, version, authors, description
-- Add your own modules in `src/`
+**After setup**: Remove `examples/`, `src/examples/`, and `src/examples.rs`. Update README and Cargo.toml.
 
 ## Examples
 

@@ -334,7 +334,7 @@ cargo run
 
 ```bash
 # Remove examples after learning
-rm -rf examples/ src/examples/
+rm -rf examples/ src/examples/ src/examples.rs
 
 # Keep CHEATSHEET.md as reference
 ```
