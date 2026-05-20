@@ -73,3 +73,25 @@ where
         (**self).update(message, context);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Context;
+    use crate::Message;
+    use std::sync::{Arc, atomic::AtomicBool};
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn quit_latches_even_when_message_channel_is_full() {
+        let (sender, _receiver) = mpsc::channel(1);
+        sender
+            .try_send(Message::custom("queued"))
+            .expect("queue first message");
+
+        let context = Context::new(sender, Arc::new(AtomicBool::new(false)));
+
+        context.quit();
+
+        assert!(context.quit_requested());
+    }
+}

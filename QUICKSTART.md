@@ -2,6 +2,14 @@
 
 Get a TUI running in a few minutes.
 
+## Run the App
+
+```bash
+cargo run
+```
+
+The default binary runs the `hello_world` component. Replace `src/main.rs` when you are ready to make the project yours.
+
 ## Run an Example
 
 ```bash
@@ -40,6 +48,8 @@ crossterm = "0.29"
 tokio = { version = "1.52", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
 anyhow = "1.0"
 ```
+
+Release builds are tuned with thin LTO, one codegen unit, and stripped symbols. `Cargo.lock` is tracked so copied projects start from reproducible dependency versions.
 
 ## Component Template
 

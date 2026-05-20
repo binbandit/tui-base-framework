@@ -4,6 +4,14 @@ Runnable examples for the template. Each binary wires one reusable component fro
 
 ## Run
 
+The template has a default binary too:
+
+```bash
+cargo run
+```
+
+Run a specific example:
+
 ```bash
 cargo run --example hello_world
 cargo run --example counter

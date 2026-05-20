@@ -23,6 +23,9 @@ The runtime is built to be efficient by default:
 - Tokio uses only the features this template needs: macros, runtime, sync, and time.
 - Ratatui 0.30 is used with the Crossterm backend and layout cache, without unrelated optional widgets/macros.
 - The app is generic over your component type, avoiding a heap allocation and dynamic dispatch unless you choose to box a component yourself.
+- Stale animation ticks are dropped when the UI is busy, so background ticks do not build up into delayed redraws.
+- Key release events are filtered before they reach components, avoiding double-handling on terminals that emit enhanced keyboard events.
+- Release builds use thin LTO, one codegen unit, and stripped symbols.
 - Terminal cleanup is RAII-based and restores cursor, raw mode, alternate screen, paste, focus, and mouse state on drop.
 
 ## Quick Start
@@ -30,7 +33,7 @@ The runtime is built to be efficient by default:
 ```bash
 git clone https://github.com/binbandit/tui-base-framework my-tui-app
 cd my-tui-app
-cargo run --example counter
+cargo run
 ```
 
 Start from an example:
@@ -259,6 +262,8 @@ If the UI does not redraw after input, make sure the component returns `EventRes
 - `tokio` 1.52 with minimal runtime features
 - `anyhow` 1.0 for ergonomic error handling
 
+`Cargo.lock` is tracked because this is an application template. New projects get reproducible example builds immediately, then can update dependencies on their own cadence.
+
 ## License
 
-Licensed under either MIT or Apache-2.0, at your option.
+Licensed under either MIT or Apache-2.0, at your option. See `LICENSE-MIT` and `LICENSE-APACHE`.

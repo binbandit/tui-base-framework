@@ -243,6 +243,7 @@ fn spawn_input_loop(
         while !shutdown.load(Ordering::Relaxed) {
             match event::poll(input_poll_rate) {
                 Ok(true) => match event::read() {
+                    Ok(event) if event.is_key_release() => {}
                     Ok(event) => {
                         if event_tx.blocking_send(Ok(Event::from(event))).is_err() {
                             break;
@@ -271,8 +272,9 @@ async fn tick_loop(event_tx: mpsc::Sender<RuntimeEvent>, tick_rate: Duration) {
     loop {
         interval.tick().await;
 
-        if event_tx.send(Ok(Event::Tick)).await.is_err() {
-            break;
+        match event_tx.try_send(Ok(Event::Tick)) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+            Err(mpsc::error::TrySendError::Closed(_)) => break,
         }
     }
 }
