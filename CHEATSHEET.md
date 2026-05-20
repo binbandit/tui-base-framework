@@ -1,130 +1,224 @@
 # TUI Framework Cheat Sheet
 
-Quick reference for common patterns and code snippets.
-
-## Component Template
+## Imports
 
 ```rust
-use tui_base_framework::{Component, Event, EventResult, Message, Frame, Rect};
-use ratatui::widgets::{Paragraph, Block, Borders};
-use crossterm::event::KeyCode;
-use tokio::sync::mpsc;
+use anyhow::Result;
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use tui_base_framework::{
+    App, AppConfig, Component, Context, Event, EventResult, Frame, Message, Rect,
+    TerminalConfig,
+};
+use tui_base_framework::layout::{Alignment, Constraint, Direction, Layout};
+use tui_base_framework::style::{Color, Modifier, Style};
+use tui_base_framework::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Tabs};
+```
 
+## Component
+
+```rust
 struct MyComponent {
-    // Your state
-    message_sender: Option<mpsc::Sender<Message>>,
+    value: i32,
 }
 
 impl Component for MyComponent {
+    fn init(&mut self, _context: &Context) {}
+
     fn render(&self, frame: &mut Frame, area: Rect) {
-        // Draw UI
+        let widget = Paragraph::new(format!("Value: {}", self.value))
+            .block(Block::default().borders(Borders::ALL));
+
+        frame.render_widget(widget, area);
     }
-    
-    fn handle_event(&mut self, event: Event) -> EventResult {
-        if let Event::Key(key) = event {
-            match key.code {
+
+    fn handle_event(&mut self, event: Event, context: &Context) -> EventResult {
+        match event {
+            Event::Key(key) => match key.code {
                 KeyCode::Char('q') => {
-                    if let Some(sender) = &self.message_sender {
-                        let _ = sender.try_send(Message::Quit);
-                    }
+                    context.quit();
                     EventResult::Consumed
                 }
                 _ => EventResult::Propagate,
-            }
-        } else {
-            EventResult::Propagate
+            },
+            _ => EventResult::Propagate,
         }
     }
-    
-    fn update(&mut self, _message: Message) {}
-    
-    fn set_message_sender(&mut self, sender: mpsc::Sender<Message>) {
-        self.message_sender = Some(sender);
+
+    fn update(&mut self, _message: Message, _context: &Context) {}
+}
+```
+
+## Main
+
+```rust
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut app = App::new(MyComponent { value: 0 })?;
+    app.run().await
+}
+```
+
+## Configure App
+
+```rust
+use std::time::Duration;
+
+let config = AppConfig {
+    tick_rate: Duration::from_millis(100),
+    input_poll_rate: Duration::from_millis(25),
+    channel_capacity: 512,
+    quit_on_ctrl_c: true,
+    terminal: TerminalConfig {
+        mouse_capture: true,
+        bracketed_paste: true,
+        focus_change: false,
+    },
+};
+
+let mut app = App::with_config(component, config)?;
+```
+
+## Events
+
+```rust
+match event {
+    Event::FocusGained => {}
+    Event::FocusLost => {}
+    Event::Key(key) => {}
+    Event::Mouse(mouse) => {}
+    Event::Paste(text) => {}
+    Event::Resize(width, height) => {}
+    Event::Tick => {}
+}
+```
+
+Return `EventResult::Consumed` when state changed. Return `EventResult::Propagate` for ignored events.
+
+## Keyboard
+
+```rust
+match key.code {
+    KeyCode::Char('q') | KeyCode::Esc => {
+        context.quit();
+        EventResult::Consumed
+    }
+    KeyCode::Up => {
+        self.selected = self.selected.saturating_sub(1);
+        EventResult::Consumed
+    }
+    KeyCode::Down => {
+        if let Some(last) = self.items.len().checked_sub(1) {
+            self.selected = (self.selected + 1).min(last);
+        }
+        EventResult::Consumed
+    }
+    KeyCode::Enter => EventResult::Consumed,
+    _ => EventResult::Propagate,
+}
+```
+
+## Modifiers
+
+```rust
+if key.modifiers.contains(KeyModifiers::CONTROL) {
+    // Ctrl is pressed
+}
+
+if key.modifiers.contains(KeyModifiers::ALT) {
+    // Alt is pressed
+}
+
+if key.modifiers.contains(KeyModifiers::SHIFT) {
+    // Shift is pressed
+}
+```
+
+## Mouse
+
+Enable mouse capture first:
+
+```rust
+let config = AppConfig {
+    terminal: TerminalConfig {
+        mouse_capture: true,
+        ..TerminalConfig::default()
+    },
+    ..AppConfig::default()
+};
+```
+
+Handle mouse events:
+
+```rust
+if let Event::Mouse(mouse) = event {
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            // mouse.column, mouse.row
+            EventResult::Consumed
+        }
+        MouseEventKind::ScrollUp => EventResult::Consumed,
+        MouseEventKind::ScrollDown => EventResult::Consumed,
+        _ => EventResult::Propagate,
+    }
+} else {
+    EventResult::Propagate
+}
+```
+
+## Messages
+
+Send:
+
+```rust
+let _ = context.try_send(Message::custom(AppMessage::Saved));
+```
+
+Receive:
+
+```rust
+fn update(&mut self, message: Message, _context: &Context) {
+    if let Ok(message) = message.downcast::<AppMessage>() {
+        match *message {
+            AppMessage::Saved => {}
+        }
     }
 }
 ```
 
-## Common Imports
+From a background task:
 
 ```rust
-// Framework
-use tui_base_framework::{Component, Event, EventResult, Message, Frame, Rect, App};
+fn init(&mut self, context: &Context) {
+    let sender = context.message_sender();
 
-// Widgets
-use ratatui::widgets::{
-    Paragraph, Block, Borders, List, ListItem, 
-    Table, Row, Gauge, Tabs
-};
-
-// Layout
-use ratatui::layout::{Layout, Direction, Constraint, Alignment};
-
-// Styling
-use ratatui::style::{Style, Color, Modifier};
-
-// Input
-use crossterm::event::{KeyCode, KeyModifiers, MouseEvent};
-
-// Async
-use tokio::sync::mpsc;
-
-// Error handling
-use anyhow::Result;
+    tokio::spawn(async move {
+        let _ = sender.send(Message::custom(AppMessage::Loaded)).await;
+    });
+}
 ```
 
 ## Layouts
 
-### Vertical Split (Header/Body/Footer)
+### Header / Body / Footer
 
 ```rust
 let chunks = Layout::default()
     .direction(Direction::Vertical)
     .constraints([
-        Constraint::Length(3),    // Fixed height
-        Constraint::Min(0),       // Flexible
-        Constraint::Length(3),    // Fixed height
+        Constraint::Length(3),
+        Constraint::Min(0),
+        Constraint::Length(3),
     ])
     .split(area);
 ```
 
-### Horizontal Split (Sidebar/Main)
+### Sidebar / Main
 
 ```rust
 let chunks = Layout::default()
     .direction(Direction::Horizontal)
-    .constraints([
-        Constraint::Percentage(20),  // 20% width
-        Constraint::Percentage(80),  // 80% width
-    ])
+    .constraints([Constraint::Length(30), Constraint::Min(0)])
     .split(area);
-```
-
-### Grid Layout
-
-```rust
-let rows = Layout::default()
-    .direction(Direction::Vertical)
-    .constraints([
-        Constraint::Percentage(50),
-        Constraint::Percentage(50),
-    ])
-    .split(area);
-
-let top_cols = Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints([
-        Constraint::Percentage(50),
-        Constraint::Percentage(50),
-    ])
-    .split(rows[0]);
-
-let bottom_cols = Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints([
-        Constraint::Percentage(50),
-        Constraint::Percentage(50),
-    ])
-    .split(rows[1]);
 ```
 
 ## Widgets
@@ -132,285 +226,78 @@ let bottom_cols = Layout::default()
 ### Paragraph
 
 ```rust
-let para = Paragraph::new("Text content")
-    .block(Block::default()
-        .borders(Borders::ALL)
-        .title("Title"))
-    .style(Style::default().fg(Color::White))
-    .alignment(Alignment::Center);
-
-frame.render_widget(para, area);
+let widget = Paragraph::new("Hello")
+    .block(Block::default().borders(Borders::ALL).title("Title"))
+    .alignment(Alignment::Center)
+    .style(Style::default().fg(Color::Cyan));
 ```
 
 ### List
 
 ```rust
-let items: Vec<ListItem> = vec![
-    ListItem::new("Item 1"),
-    ListItem::new("Item 2"),
-    ListItem::new("Item 3"),
-];
+let items = self.items.iter().map(|item| ListItem::new(item.as_str()));
 
-let list = List::new(items)
-    .block(Block::default().borders(Borders::ALL).title("List"))
-    .style(Style::default().fg(Color::White))
-    .highlight_style(Style::default().bg(Color::Cyan));
-
-frame.render_widget(list, area);
+let widget = List::new(items)
+    .block(Block::default().borders(Borders::ALL).title("Items"))
+    .highlight_style(Style::default().bg(Color::Cyan).fg(Color::Black));
 ```
 
-### Gauge (Progress Bar)
+### Gauge
 
 ```rust
-let gauge = Gauge::default()
+let widget = Gauge::default()
     .block(Block::default().borders(Borders::ALL).title("Progress"))
-    .gauge_style(Style::default().fg(Color::Green))
-    .percent(50)
-    .label("50%");
-
-frame.render_widget(gauge, area);
+    .percent(self.progress)
+    .gauge_style(Style::default().fg(Color::Green));
 ```
 
 ### Tabs
 
 ```rust
-use ratatui::text::Span;
-
-let titles = vec![
-    Span::raw("Tab 1"),
-    Span::raw("Tab 2"),
-    Span::raw("Tab 3"),
-];
-
-let tabs = Tabs::new(titles)
-    .block(Block::default().borders(Borders::ALL))
-    .select(selected_index)
-    .highlight_style(Style::default().fg(Color::Yellow));
-
-frame.render_widget(tabs, area);
+let widget = Tabs::new(["Home", "Settings", "About"])
+    .select(self.selected_tab)
+    .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
 ```
 
-## Styling
-
-### Colors
+## Text Input
 
 ```rust
-Style::default().fg(Color::Red)
-Style::default().bg(Color::Blue)
-Style::default().fg(Color::Rgb(255, 128, 0))  // Custom RGB
-```
-
-### Modifiers
-
-```rust
-Style::default()
-    .add_modifier(Modifier::BOLD)
-    .add_modifier(Modifier::ITALIC)
-    .add_modifier(Modifier::UNDERLINED)
-```
-
-### Combined
-
-```rust
-Style::default()
-    .fg(Color::Yellow)
-    .bg(Color::Black)
-    .add_modifier(Modifier::BOLD)
-```
-
-## Event Handling
-
-### Keyboard
-
-```rust
-fn handle_event(&mut self, event: Event) -> EventResult {
-    match event {
-        Event::Key(key) => {
-            match key.code {
-                KeyCode::Char(c) => {
-                    // Handle character
-                    EventResult::Consumed
-                }
-                KeyCode::Up => {
-                    // Handle up arrow
-                    EventResult::Consumed
-                }
-                KeyCode::Down => {
-                    // Handle down arrow
-                    EventResult::Consumed
-                }
-                KeyCode::Enter => {
-                    // Handle enter
-                    EventResult::Consumed
-                }
-                KeyCode::Backspace => {
-                    // Handle backspace
-                    EventResult::Consumed
-                }
-                KeyCode::Esc => {
-                    // Handle escape
-                    EventResult::Consumed
-                }
-                KeyCode::Tab => {
-                    // Handle tab
-                    EventResult::Consumed
-                }
-                _ => EventResult::Propagate,
-            }
-        }
-        _ => EventResult::Propagate,
+match event {
+    Event::Paste(text) => {
+        self.input.push_str(&text);
+        EventResult::Consumed
     }
-}
-```
-
-### Tick Events (for animations)
-
-```rust
-fn handle_event(&mut self, event: Event) -> EventResult {
-    match event {
-        Event::Tick => {
-            // Fires every 250ms - perfect for animations
-            self.update_animation();
+    Event::Key(key) => match key.code {
+        KeyCode::Char(c) => {
+            self.input.push(c);
             EventResult::Consumed
         }
-        Event::Key(key) => {
-            // Handle keyboard
+        KeyCode::Backspace => {
+            self.input.pop();
+            EventResult::Consumed
+        }
+        KeyCode::Enter => {
+            self.input.clear();
             EventResult::Consumed
         }
         _ => EventResult::Propagate,
-    }
+    },
+    _ => EventResult::Propagate,
 }
 ```
 
-### Modifiers
+## Performance
 
-```rust
-if key.modifiers.contains(KeyModifiers::CONTROL) {
-    // Ctrl is pressed
-}
+- Keep `render` deterministic and cheap.
+- Precompute expensive strings/data in `update` or event handlers.
+- Return `Consumed` only when state changed or the UI should redraw.
+- Tune `tick_rate` for animation. Slower ticks mean less redraw pressure.
+- Use `Context::message_sender()` for background work instead of blocking in `handle_event`.
+- Keep terminal input polling modest. The default is 50ms.
 
-if key.modifiers.contains(KeyModifiers::SHIFT) {
-    // Shift is pressed
-}
+## Debugging
 
-if key.modifiers.contains(KeyModifiers::ALT) {
-    // Alt is pressed
-}
-```
-
-### Mouse
-
-```rust
-if let Event::Mouse(mouse) = event {
-    match mouse.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
-            // Left click at (mouse.column, mouse.row)
-        }
-        MouseEventKind::ScrollUp => {
-            // Scroll up
-        }
-        MouseEventKind::ScrollDown => {
-            // Scroll down
-        }
-        _ => {}
-    }
-}
-```
-
-## Common Patterns
-
-### List Navigation
-
-```rust
-KeyCode::Up => {
-    if self.selected > 0 {
-        self.selected -= 1;
-    }
-    EventResult::Consumed
-}
-KeyCode::Down => {
-    if self.selected < self.items.len() - 1 {
-        self.selected += 1;
-    }
-    EventResult::Consumed
-}
-```
-
-### Text Input
-
-```rust
-KeyCode::Char(c) => {
-    self.input.push(c);
-    EventResult::Consumed
-}
-KeyCode::Backspace => {
-    self.input.pop();
-    EventResult::Consumed
-}
-KeyCode::Enter => {
-    // Process input
-    self.input.clear();
-    EventResult::Consumed
-}
-```
-
-### Toggle State
-
-```rust
-KeyCode::Char(' ') => {
-    self.enabled = !self.enabled;
-    EventResult::Consumed
-}
-```
-
-### Modal/Mode Switching
-
-```rust
-enum Mode {
-    Normal,
-    Insert,
-    Command,
-}
-
-fn handle_event(&mut self, event: Event) -> EventResult {
-    match self.mode {
-        Mode::Normal => self.handle_normal_mode(event),
-        Mode::Insert => self.handle_insert_mode(event),
-        Mode::Command => self.handle_command_mode(event),
-    }
-}
-```
-
-### Conditional Styling
-
-```rust
-let style = if is_selected {
-    Style::default().fg(Color::Black).bg(Color::Cyan)
-} else if is_disabled {
-    Style::default().fg(Color::DarkGray)
-} else {
-    Style::default().fg(Color::White)
-};
-```
-
-## Main Function
-
-```rust
-use tui_base_framework::App;
-use anyhow::Result;
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let component = MyComponent::new();
-    let mut app = App::new(Box::new(component))?;
-    app.run().await?;
-    Ok(())
-}
-```
-
-## Debugging Tips
-
-### Print to File (Terminal is captured)
+The terminal is captured while the app runs, so write debug output to a file:
 
 ```rust
 use std::fs::OpenOptions;
@@ -421,116 +308,11 @@ let mut file = OpenOptions::new()
     .append(true)
     .open("debug.log")?;
 
-writeln!(file, "Debug: {:?}", value)?;
+writeln!(file, "state = {:?}", self.state)?;
 ```
 
-### Panic Handler
+If the terminal is left in a bad state after a hard crash:
 
-```rust
-use std::panic;
-
-fn main() {
-    panic::set_hook(Box::new(|panic_info| {
-        // Log panic to file
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("panic.log")
-            .unwrap();
-        writeln!(file, "Panic: {:?}", panic_info).unwrap();
-    }));
-    
-    // Run app...
-}
+```bash
+reset
 ```
-
-## Performance Tips
-
-1. **Avoid allocations in render()** - Pre-compute strings in update()
-2. **Use references** - Don't clone unnecessarily
-3. **Batch updates** - Update state once, render once
-4. **Limit redraws** - Only redraw when state changes
-
-## Common Mistakes
-
-### ❌ Don't: Always return Consumed
-
-```rust
-fn handle_event(&mut self, event: Event) -> EventResult {
-    // Handle event...
-    EventResult::Consumed  // Blocks all events!
-}
-```
-
-### ✅ Do: Return Propagate for unhandled events
-
-```rust
-fn handle_event(&mut self, event: Event) -> EventResult {
-    if let Event::Key(key) = event {
-        match key.code {
-            KeyCode::Char('q') => EventResult::Consumed,
-            _ => EventResult::Propagate,  // Let others handle it
-        }
-    } else {
-        EventResult::Propagate
-    }
-}
-```
-
-### ❌ Don't: Forget to check bounds
-
-```rust
-self.selected += 1;  // Can go out of bounds!
-```
-
-### ✅ Do: Always check bounds
-
-```rust
-if self.selected < self.items.len() - 1 {
-    self.selected += 1;
-}
-```
-
-### ❌ Don't: Panic in render()
-
-```rust
-fn render(&self, frame: &mut Frame, area: Rect) {
-    let item = &self.items[self.selected];  // Panics if empty!
-}
-```
-
-### ✅ Do: Handle edge cases
-
-```rust
-fn render(&self, frame: &mut Frame, area: Rect) {
-    if let Some(item) = self.items.get(self.selected) {
-        // Render item
-    }
-}
-```
-
-## Quick Reference
-
-| Task | Code |
-|------|------|
-| Quit app | `sender.try_send(Message::Quit)` |
-| Center text | `.alignment(Alignment::Center)` |
-| Add border | `.block(Block::default().borders(Borders::ALL))` |
-| Bold text | `.add_modifier(Modifier::BOLD)` |
-| Set color | `.fg(Color::Cyan)` |
-| Fixed height | `Constraint::Length(3)` |
-| Flexible size | `Constraint::Min(0)` |
-| Percentage | `Constraint::Percentage(50)` |
-| Consume event | `EventResult::Consumed` |
-| Pass event | `EventResult::Propagate` |
-
-## Resources
-
-- [Ratatui Docs](https://ratatui.rs/)
-- [Crossterm Docs](https://docs.rs/crossterm/)
-- [Examples](./examples/)
-- [QUICKSTART.md](./QUICKSTART.md)
-
----
-
-Keep this handy while coding! 📋

@@ -1,40 +1,55 @@
-use crate::component::Component;
+use crate::component::{Component, Context};
 use crate::event::{Event, EventResult};
-use crate::message::Message;
-use ratatui::{Frame, layout::Rect};
-use ratatui::widgets::{List, ListItem, Block, Borders};
-use ratatui::style::{Style, Color, Modifier};
 use crossterm::event::KeyCode;
-use tokio::sync::mpsc;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::{Frame, layout::Rect};
 
 /// A list selector demonstrating navigation and selection
 pub struct ListSelector {
     items: Vec<String>,
     selected: usize,
-    message_sender: Option<mpsc::Sender<Message>>,
 }
 
 impl ListSelector {
     pub fn new() -> Self {
+        Self::with_items([
+            "Rust",
+            "Python",
+            "JavaScript",
+            "Go",
+            "TypeScript",
+            "C++",
+            "Java",
+        ])
+    }
+
+    pub fn with_items<I, S>(items: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         Self {
-            items: vec![
-                "Rust".to_string(),
-                "Python".to_string(),
-                "JavaScript".to_string(),
-                "Go".to_string(),
-                "TypeScript".to_string(),
-                "C++".to_string(),
-                "Java".to_string(),
-            ],
+            items: items.into_iter().map(Into::into).collect(),
             selected: 0,
-            message_sender: None,
+        }
+    }
+
+    fn select_previous(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+    }
+
+    fn select_next(&mut self) {
+        if let Some(last_index) = self.items.len().checked_sub(1) {
+            self.selected = (self.selected + 1).min(last_index);
         }
     }
 }
 
 impl Component for ListSelector {
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let items: Vec<ListItem> = self.items
+        let items: Vec<ListItem> = self
+            .items
             .iter()
             .enumerate()
             .map(|(i, item)| {
@@ -46,39 +61,34 @@ impl Component for ListSelector {
                 } else {
                     Style::default().fg(Color::White)
                 };
-                
+
                 let prefix = if i == self.selected { "► " } else { "  " };
                 ListItem::new(format!("{}{}", prefix, item)).style(style)
             })
             .collect();
-        
-        let list = List::new(items)
-            .block(Block::default()
+
+        let list = List::new(items).block(
+            Block::default()
                 .borders(Borders::ALL)
-                .title("List Selector (↑/↓ to navigate, q to quit)"));
-        
+                .title("List Selector (↑/↓ to navigate, q to quit)"),
+        );
+
         frame.render_widget(list, area);
     }
-    
-    fn handle_event(&mut self, event: Event) -> EventResult {
+
+    fn handle_event(&mut self, event: Event, context: &Context) -> EventResult {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Up => {
-                    if self.selected > 0 {
-                        self.selected -= 1;
-                    }
+                    self.select_previous();
                     EventResult::Consumed
                 }
                 KeyCode::Down => {
-                    if self.selected < self.items.len() - 1 {
-                        self.selected += 1;
-                    }
+                    self.select_next();
                     EventResult::Consumed
                 }
                 KeyCode::Char('q') | KeyCode::Char('Q') => {
-                    if let Some(sender) = &self.message_sender {
-                        let _ = sender.try_send(Message::Quit);
-                    }
+                    context.quit();
                     EventResult::Consumed
                 }
                 _ => EventResult::Propagate,
@@ -86,12 +96,6 @@ impl Component for ListSelector {
         } else {
             EventResult::Propagate
         }
-    }
-    
-    fn update(&mut self, _message: Message) {}
-    
-    fn set_message_sender(&mut self, sender: mpsc::Sender<Message>) {
-        self.message_sender = Some(sender);
     }
 }
 

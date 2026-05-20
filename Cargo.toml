@@ -1,16 +1,16 @@
 [package]
 name = "tui-base-framework"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["binbandit <crazywolf132@gmail.com>"]
-description = "A minimal, extensible TUI template built with Ratatui and Tokio"
+description = "A fast, extensible TUI template built with Ratatui and Tokio"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/binbandit/tui-base-framework"
 homepage = "https://github.com/binbandit/tui-base-framework"
 readme = "README.md"
 keywords = ["tui", "terminal", "ratatui", "template", "component"]
 categories = ["command-line-interface", "asynchronous"]
-rust-version = "1.70"
+rust-version = "1.86"
 
 # When using this template, update the fields above with your project info:
 # - name: Your project name
@@ -23,10 +23,18 @@ rust-version = "1.70"
 # and this will become a binary-only project.
 
 [dependencies]
-ratatui = "0.29"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
 crossterm = "0.29"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.52", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
 anyhow = "1.0"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"
+
+[lints.rust]
+unsafe_code = "forbid"
 
 [[example]]
 name = "hello_world"
