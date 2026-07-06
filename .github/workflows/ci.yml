@@ -42,6 +42,9 @@ jobs:
       - name: Docs
         run: cargo doc --no-deps
 
+      - name: Shellcheck setup script
+        run: shellcheck setup.sh
+
   msrv:
     name: MSRV (1.88)
     runs-on: ubuntu-latest

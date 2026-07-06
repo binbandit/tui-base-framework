@@ -321,6 +321,19 @@ The runtime is built to be efficient by default:
 - Tokio and Ratatui are built with only the features this template needs.
 - Release builds use thin LTO, one codegen unit, and stripped symbols.
 
+## Releasing Your App
+
+Tag a version and CI ships it:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow builds optimized binaries for Linux (x86_64, arm64), macOS (Apple Silicon, Intel), and Windows, and attaches them to a GitHub release with generated notes. The binary name is read from `Cargo.toml`, so it works unchanged after `setup.sh` renames your project. Release builds use thin LTO, a single codegen unit, and stripped symbols — the starter app comes out under 1 MB.
+
+Dependabot is configured to open weekly grouped PRs for Cargo dependencies and GitHub Actions, so the project stays current after you fork off.
+
 ## Troubleshooting
 
 **Panics print normally.** A panic hook restores the terminal before the panic message is printed, so you get a readable message and backtrace instead of a mangled alternate screen. Terminal cleanup is also RAII-based: cursor, raw mode, alternate screen, paste, focus, and mouse state are restored when `App` drops.

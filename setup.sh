@@ -76,10 +76,14 @@ echo "Setting up '$NAME'..."
 # ---------------------------------------------------------------------------
 # Rename the crate everywhere
 # ---------------------------------------------------------------------------
-FILES="$(find src examples -name '*.rs' 2>/dev/null; ls Cargo.toml Cargo.lock *.md examples/*.md 2>/dev/null)"
-for f in $FILES; do
-    sed -i.bak -e "s/$OLD_IDENT/$IDENT/g" -e "s/$OLD_PKG/$NAME/g" "$f" && rm -f "$f.bak"
+find src examples -type f -name '*.rs' \
+    -exec sed -i.bak -e "s/$OLD_IDENT/$IDENT/g" -e "s/$OLD_PKG/$NAME/g" {} + 2>/dev/null || true
+for f in Cargo.toml Cargo.lock ./*.md examples/*.md; do
+    [ -f "$f" ] || continue
+    sed -i.bak -e "s/$OLD_IDENT/$IDENT/g" -e "s/$OLD_PKG/$NAME/g" "$f"
 done
+find src examples . -maxdepth 1 -name '*.bak' -delete 2>/dev/null || true
+rm -f examples/*.bak
 note "renamed crate to '$NAME' (module path '$IDENT')"
 
 # ---------------------------------------------------------------------------
@@ -114,6 +118,8 @@ sed -i.bak '/^$/N;/^\n$/D' Cargo.toml && rm -f Cargo.toml.bak
 # ---------------------------------------------------------------------------
 if $NO_EXAMPLES; then
     rm -rf examples
+    # The backticks below are literal doc-comment text, not command expansion.
+    # shellcheck disable=SC2016
     sed -i.bak '/from `examples\/` over it/d' src/main.rs && rm -f src/main.rs.bak
     note "removed examples/"
 fi
@@ -126,12 +132,10 @@ if $APP_ONLY; then
 
     # The framework module is self-contained under src/tui/, so the binary
     # adopts it with a `mod tui;` declaration and crate-local imports.
-    for f in $(find src -name '*.rs'); do
-        sed -i.bak \
-            -e "s/use $IDENT::/use crate::tui::/g" \
-            -e "s/$IDENT::/crate::tui::/g" \
-            "$f" && rm -f "$f.bak"
-    done
+    find src -type f -name '*.rs' -exec sed -i.bak \
+        -e "s/use $IDENT::/use crate::tui::/g" \
+        -e "s/$IDENT::/crate::tui::/g" {} +
+    find src -name '*.bak' -delete
     # In a binary crate, framework API your app doesn't use yet would warn as
     # dead code; allow it on the module until you grow into it.
     sed -i.bak "0,/^use /s//#[allow(dead_code, unused_imports)]\nmod tui;\n\nuse /" src/main.rs \
@@ -142,7 +146,8 @@ if $APP_ONLY; then
         && rm -f src/tui/mod.rs.bak
 
     # Point doc snippets at the new paths.
-    for f in $(ls *.md 2>/dev/null); do
+    for f in ./*.md; do
+        [ -f "$f" ] || continue
         sed -i.bak "s/use $IDENT::/use crate::tui::/g" "$f" && rm -f "$f.bak"
     done
     note "converted to a binary-only app (framework lives in src/tui/)"
