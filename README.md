@@ -2,7 +2,7 @@
 
 A fast, small Rust template for building terminal user interfaces with Ratatui, Crossterm, and Tokio.
 
-This repository is meant to be copied, trimmed, and shipped. It gives you a working app loop, terminal cleanup, typed events, message passing, and a set of runnable examples without forcing a large architecture on your project.
+This repository is meant to be copied, trimmed, and shipped. It gives you a working app loop, terminal cleanup, typed events, type-safe message passing, and a set of runnable examples without forcing a large architecture on your project.
 
 ## Why This Template?
 
@@ -11,22 +11,8 @@ Most TUI starters either leave you wiring every terminal detail yourself or intr
 - Implement `Component`
 - Render Ratatui widgets
 - Handle input events
-- Send messages through `Context`
+- Send typed messages through `Context`
 - Let `App` manage terminal lifecycle, ticks, and redraws
-
-## Performance Defaults
-
-The runtime is built to be efficient by default:
-
-- Event-driven rendering: the app redraws after handled events/messages instead of repainting every frame.
-- Blocking terminal input is isolated in a blocking task, so it does not park Tokio worker threads.
-- Tokio uses only the features this template needs: macros, runtime, sync, and time.
-- Ratatui 0.30 is used with the Crossterm backend and layout cache, without unrelated optional widgets/macros.
-- The app is generic over your component type, avoiding a heap allocation and dynamic dispatch unless you choose to box a component yourself.
-- Stale animation ticks are dropped when the UI is busy, so background ticks do not build up into delayed redraws.
-- Key release events are filtered before they reach components, avoiding double-handling on terminals that emit enhanced keyboard events.
-- Release builds use thin LTO, one codegen unit, and stripped symbols.
-- Terminal cleanup is RAII-based and restores cursor, raw mode, alternate screen, paste, focus, and mouse state on drop.
 
 ## Quick Start
 
@@ -36,48 +22,36 @@ cd my-tui-app
 cargo run
 ```
 
-Start from an example:
+`cargo run` launches a small starter app whose code lives in `src/main.rs`, ready to edit. Or start from an example — every example is a single self-contained file:
 
 ```bash
-cp examples/counter.rs src/main.rs
+cargo run --example counter      # try it
+cp examples/counter.rs src/main.rs   # make it yours
 cargo run
-```
-
-Run every example:
-
-```bash
-cargo run --example hello_world
-cargo run --example counter
-cargo run --example text_input
-cargo run --example list_selector
-cargo run --example layout_demo
-cargo run --example tabs
-cargo run --example progress
 ```
 
 ## Minimal App
 
 ```rust
 use anyhow::Result;
-use crossterm::event::KeyCode;
-use tui_base_framework::{
-    App, Component, Context, Event, EventResult, Frame, Message, Rect,
-};
-use tui_base_framework::widgets::{Block, Borders, Paragraph};
+use tui_base_framework::{App, Component, Context, Event, EventResult, Frame, KeyCode, Rect};
+use tui_base_framework::widgets::{Block, Paragraph};
 
 struct Counter {
-    count: i32,
+    count: i64,
 }
 
 impl Component for Counter {
-    fn render(&self, frame: &mut Frame, area: Rect) {
+    type Message = ();
+
+    fn render(&mut self, frame: &mut Frame, area: Rect) {
         let widget = Paragraph::new(format!("Count: {} | q to quit", self.count))
-            .block(Block::default().borders(Borders::ALL).title("Counter"));
+            .block(Block::bordered().title("Counter"));
 
         frame.render_widget(widget, area);
     }
 
-    fn handle_event(&mut self, event: Event, context: &Context) -> EventResult {
+    fn handle_event(&mut self, event: Event, context: &Context<Self::Message>) -> EventResult {
         match event {
             Event::Key(key) => match key.code {
                 KeyCode::Up => {
@@ -97,18 +71,11 @@ impl Component for Counter {
             _ => EventResult::Propagate,
         }
     }
-
-    fn update(&mut self, message: Message, _context: &Context) {
-        if let Ok(value) = message.downcast::<i32>() {
-            self.count = *value;
-        }
-    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut app = App::new(Counter { count: 0 })?;
-    app.run().await
+    App::new(Counter { count: 0 })?.run().await
 }
 ```
 
@@ -116,32 +83,77 @@ async fn main() -> Result<()> {
 
 ### Components
 
-A component owns state, renders UI, and reacts to events/messages.
+A component owns state, renders UI, and reacts to events and messages.
 
 ```rust
 pub trait Component: Send {
-    fn init(&mut self, _context: &Context) {}
-    fn render(&self, frame: &mut Frame, area: Rect);
-    fn handle_event(&mut self, _event: Event, _context: &Context) -> EventResult {
+    type Message: Send + 'static;
+
+    fn init(&mut self, _context: &Context<Self::Message>) {}
+    fn render(&mut self, frame: &mut Frame, area: Rect);
+    fn handle_event(&mut self, _event: Event, _context: &Context<Self::Message>) -> EventResult {
         EventResult::Propagate
     }
-    fn update(&mut self, _message: Message, _context: &Context) {}
+    fn update(&mut self, _message: Self::Message, _context: &Context<Self::Message>) {}
 }
 ```
 
 Return `EventResult::Consumed` when an event changed state and should trigger a redraw. Return `EventResult::Propagate` when you ignored it.
+
+`render` takes `&mut self`, so stateful Ratatui widgets (`ListState`, `TableState`, scroll offsets) live directly in your component — see `examples/list_selector.rs`.
+
+### Messages
+
+Messages are fully typed: declare an enum with one variant per thing that can happen asynchronously, and set it as your component's `Message` type. No downcasting, no boxing.
+
+```rust
+enum Msg {
+    Progress(u16),
+    Done { records: u32 },
+}
+
+impl Component for MyApp {
+    type Message = Msg;
+
+    fn update(&mut self, message: Msg, _context: &Context<Msg>) {
+        match message {
+            Msg::Progress(pct) => self.progress = pct,
+            Msg::Done { records } => self.finish(records),
+        }
+    }
+    // ...
+}
+```
+
+Components that don't need messages use `type Message = ();`.
 
 ### Context
 
 `Context` is how components talk back to the app loop:
 
 ```rust
-context.quit();
-let _ = context.try_send(Message::custom(MyMessage::Saved));
-let sender = context.message_sender();
+context.quit();                        // ask the loop to exit
+let _ = context.try_send(Msg::Saved);  // deliver a message to update()
+let sender = context.sender();         // clone a sender for background tasks
 ```
 
-Use `message_sender()` when a background task needs to report back to the UI.
+### Background Work
+
+Spawn a Tokio task, move a sender into it, and report back with typed messages. The UI never blocks:
+
+```rust
+fn handle_event(&mut self, event: Event, context: &Context<Msg>) -> EventResult {
+    // ...on some key press:
+    let sender = context.sender();
+    tokio::spawn(async move {
+        let records = fetch_data().await;
+        let _ = sender.send(Msg::Done { records }).await;
+    });
+    EventResult::Consumed
+}
+```
+
+See `examples/async_task.rs` for a complete, runnable version of this pattern.
 
 ### Events
 
@@ -160,22 +172,6 @@ pub enum Event {
 ```
 
 `Tick` fires every 250ms by default. Change it through `AppConfig` when you need smoother animation or less frequent polling.
-
-### Messages
-
-Messages are for cross-component or background-task communication:
-
-```rust
-let _ = context.try_send(Message::custom(AppMessage::Refresh));
-
-fn update(&mut self, message: Message, _context: &Context) {
-    if let Ok(message) = message.downcast::<AppMessage>() {
-        // handle your typed message
-    }
-}
-```
-
-The built-in `Message::Quit` exits the app loop.
 
 ## Configuration
 
@@ -200,19 +196,26 @@ let config = AppConfig {
 let mut app = App::with_config(component, config)?;
 ```
 
-Mouse capture and focus change are opt-in because they change normal terminal behavior. Bracketed paste is enabled by default so paste input can arrive as `Event::Paste(String)`.
+Mouse capture and focus change are opt-in because they change normal terminal behavior. Bracketed paste is enabled by default so paste input arrives as a single `Event::Paste(String)`.
 
 ## Examples
+
+Each example is one self-contained file you can read top to bottom and copy over `src/main.rs`.
 
 | Example | What it shows |
 | --- | --- |
 | `hello_world` | Basic rendering and quit handling |
 | `counter` | Mutable state and keyboard input |
 | `text_input` | Character input, backspace, enter, paste |
-| `list_selector` | Bounded list navigation and selected styling |
+| `list_selector` | Stateful `List` widget with `ListState` navigation |
 | `layout_demo` | Nested Ratatui layouts |
 | `tabs` | View switching |
-| `progress` | Tick-driven updates |
+| `progress` | Tick-driven updates and a custom tick rate |
+| `async_task` | Background Tokio task reporting progress via typed messages |
+
+```bash
+cargo run --example async_task
+```
 
 ## Template Structure
 
@@ -222,34 +225,41 @@ tui-base-framework/
 │   ├── app.rs           # App loop, config, event pump
 │   ├── component.rs     # Component trait and Context
 │   ├── event.rs         # Framework event type
-│   ├── message.rs       # Quit/custom messages
-│   ├── terminal.rs      # TerminalGuard and terminal config
+│   ├── terminal.rs      # TerminalGuard, terminal config, panic hook
 │   ├── lib.rs           # Public exports
-│   ├── examples.rs      # Example module exports
-│   └── examples/        # Reusable example components
-├── examples/            # Runnable binaries
-├── QUICKSTART.md
-├── CHEATSHEET.md
+│   └── main.rs          # Your app starts here
+├── examples/            # Self-contained runnable examples
+├── CHEATSHEET.md        # Copy-paste reference for common tasks
 └── Cargo.toml
 ```
 
-When you are done learning from the examples, remove `examples/`, `src/examples/`, and `src/examples.rs`, then update `src/lib.rs` if you no longer want to export examples.
+When you are done learning from the examples, delete the `examples/` directory — nothing else references it.
 
 ## Customizing
 
 1. Update `Cargo.toml` with your project name, authors, description, repository, and license.
-2. Pick the example closest to your app.
-3. Copy it to `src/main.rs`.
-4. Replace example state and rendering with your domain.
-5. Keep the app loop until you have a reason to own lower-level terminal details.
+2. Pick the example closest to your app and copy it to `src/main.rs` (or just edit the starter that's already there).
+3. Replace the example state and rendering with your domain.
+4. Keep the app loop until you have a reason to own lower-level terminal details.
+
+## Performance Defaults
+
+The runtime is built to be efficient by default:
+
+- Event-driven rendering: the app redraws after handled events/messages instead of repainting every frame, and coalesces bursts of input into a single redraw.
+- Blocking terminal input is isolated in a blocking task, so it does not park Tokio worker threads.
+- Messages are statically typed — no boxing or runtime downcasts on the message path.
+- The app is generic over your component type, avoiding heap allocation and dynamic dispatch unless you box a component yourself.
+- Stale animation ticks are dropped when the UI is busy, so background ticks do not build up into delayed redraws.
+- Key release events are filtered before they reach components, avoiding double-handling on terminals that emit enhanced keyboard events.
+- Tokio and Ratatui are built with only the features this template needs.
+- Release builds use thin LTO, one codegen unit, and stripped symbols.
 
 ## Troubleshooting
 
-If your terminal does not restore after a hard crash, run:
+**Panics print normally.** A panic hook restores the terminal before the panic message is printed, so you get a readable message and backtrace instead of a mangled alternate screen. Terminal cleanup is also RAII-based: cursor, raw mode, alternate screen, paste, focus, and mouse state are restored when `App` drops.
 
-```bash
-reset
-```
+If your terminal is somehow left in a bad state after a hard kill (e.g. `kill -9`), run `reset`.
 
 If mouse events do not arrive, enable `TerminalConfig { mouse_capture: true, ..Default::default() }`.
 
@@ -259,7 +269,7 @@ If the UI does not redraw after input, make sure the component returns `EventRes
 
 - `ratatui` 0.30 for terminal UI rendering
 - `crossterm` 0.29 for terminal input/control
-- `tokio` 1.52 with minimal runtime features
+- `tokio` 1.x with minimal runtime features
 - `anyhow` 1.0 for ergonomic error handling
 
 `Cargo.lock` is tracked because this is an application template. New projects get reproducible example builds immediately, then can update dependencies on their own cadence.

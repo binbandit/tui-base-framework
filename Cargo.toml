@@ -19,8 +19,9 @@ rust-version = "1.86"
 # - repository: Your repository URL
 # - homepage: Your project homepage
 #
-# Note: If you don't need a library interface, you can remove src/lib.rs
-# and this will become a binary-only project.
+# The examples/ directory is auto-discovered by Cargo; delete it whenever
+# you no longer need it. If you don't need a library interface, you can
+# also remove src/lib.rs and this becomes a binary-only project.
 
 [dependencies]
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
@@ -35,31 +36,3 @@ strip = "symbols"
 
 [lints.rust]
 unsafe_code = "forbid"
-
-[[example]]
-name = "hello_world"
-path = "examples/hello_world.rs"
-
-[[example]]
-name = "counter"
-path = "examples/counter.rs"
-
-[[example]]
-name = "text_input"
-path = "examples/text_input.rs"
-
-[[example]]
-name = "list_selector"
-path = "examples/list_selector.rs"
-
-[[example]]
-name = "layout_demo"
-path = "examples/layout_demo.rs"
-
-[[example]]
-name = "tabs"
-path = "examples/tabs.rs"
-
-[[example]]
-name = "progress"
-path = "examples/progress.rs"

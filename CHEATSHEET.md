@@ -1,17 +1,20 @@
 # TUI Framework Cheat Sheet
 
+Copy-paste reference for common tasks. Everything here compiles against the template as-is.
+
 ## Imports
+
+Input types (`KeyCode`, `KeyModifiers`, ...) and Ratatui modules (`layout`, `style`, `text`, `widgets`) are re-exported, so one crate covers most needs:
 
 ```rust
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use tui_base_framework::{
-    App, AppConfig, Component, Context, Event, EventResult, Frame, Message, Rect,
-    TerminalConfig,
+    App, AppConfig, Component, Context, Event, EventResult, Frame, KeyCode, KeyModifiers,
+    MouseButton, MouseEventKind, Rect, TerminalConfig,
 };
-use tui_base_framework::layout::{Alignment, Constraint, Direction, Layout};
+use tui_base_framework::layout::{Alignment, Constraint, Layout};
 use tui_base_framework::style::{Color, Modifier, Style};
-use tui_base_framework::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Tabs};
+use tui_base_framework::widgets::{Block, Gauge, List, ListItem, ListState, Paragraph, Tabs};
 ```
 
 ## Component
@@ -22,16 +25,18 @@ struct MyComponent {
 }
 
 impl Component for MyComponent {
-    fn init(&mut self, _context: &Context) {}
+    type Message = (); // or your message enum
 
-    fn render(&self, frame: &mut Frame, area: Rect) {
+    fn init(&mut self, _context: &Context<Self::Message>) {}
+
+    fn render(&mut self, frame: &mut Frame, area: Rect) {
         let widget = Paragraph::new(format!("Value: {}", self.value))
-            .block(Block::default().borders(Borders::ALL));
+            .block(Block::bordered());
 
         frame.render_widget(widget, area);
     }
 
-    fn handle_event(&mut self, event: Event, context: &Context) -> EventResult {
+    fn handle_event(&mut self, event: Event, context: &Context<Self::Message>) -> EventResult {
         match event {
             Event::Key(key) => match key.code {
                 KeyCode::Char('q') => {
@@ -44,7 +49,7 @@ impl Component for MyComponent {
         }
     }
 
-    fn update(&mut self, _message: Message, _context: &Context) {}
+    fn update(&mut self, _message: Self::Message, _context: &Context<Self::Message>) {}
 }
 ```
 
@@ -53,8 +58,7 @@ impl Component for MyComponent {
 ```rust
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut app = App::new(MyComponent { value: 0 })?;
-    app.run().await
+    App::new(MyComponent { value: 0 })?.run().await
 }
 ```
 
@@ -167,32 +171,46 @@ if let Event::Mouse(mouse) = event {
 
 ## Messages
 
+Declare a message enum and set it as your component's `Message` type:
+
+```rust
+enum AppMessage {
+    Saved,
+    Loaded(Vec<String>),
+}
+
+impl Component for MyApp {
+    type Message = AppMessage;
+    // ...
+}
+```
+
 Send:
 
 ```rust
-let _ = context.try_send(Message::custom(AppMessage::Saved));
+let _ = context.try_send(AppMessage::Saved);
 ```
 
-Receive:
+Receive — messages arrive fully typed, no downcasting:
 
 ```rust
-fn update(&mut self, message: Message, _context: &Context) {
-    if let Ok(message) = message.downcast::<AppMessage>() {
-        match *message {
-            AppMessage::Saved => {}
-        }
+fn update(&mut self, message: AppMessage, _context: &Context<AppMessage>) {
+    match message {
+        AppMessage::Saved => {}
+        AppMessage::Loaded(items) => self.items = items,
     }
 }
 ```
 
-From a background task:
+From a background task (see `examples/async_task.rs` for a full program):
 
 ```rust
-fn init(&mut self, context: &Context) {
-    let sender = context.message_sender();
+fn init(&mut self, context: &Context<AppMessage>) {
+    let sender = context.sender();
 
     tokio::spawn(async move {
-        let _ = sender.send(Message::custom(AppMessage::Loaded)).await;
+        let items = load_items().await;
+        let _ = sender.send(AppMessage::Loaded(items)).await;
     });
 }
 ```
@@ -202,23 +220,19 @@ fn init(&mut self, context: &Context) {
 ### Header / Body / Footer
 
 ```rust
-let chunks = Layout::default()
-    .direction(Direction::Vertical)
-    .constraints([
-        Constraint::Length(3),
-        Constraint::Min(0),
-        Constraint::Length(3),
-    ])
-    .split(area);
+let [header, body, footer] = Layout::vertical([
+    Constraint::Length(3),
+    Constraint::Min(0),
+    Constraint::Length(3),
+])
+.areas(area);
 ```
 
 ### Sidebar / Main
 
 ```rust
-let chunks = Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints([Constraint::Length(30), Constraint::Min(0)])
-    .split(area);
+let [sidebar, main] =
+    Layout::horizontal([Constraint::Length(30), Constraint::Min(0)]).areas(area);
 ```
 
 ## Widgets
@@ -227,26 +241,34 @@ let chunks = Layout::default()
 
 ```rust
 let widget = Paragraph::new("Hello")
-    .block(Block::default().borders(Borders::ALL).title("Title"))
+    .block(Block::bordered().title("Title"))
     .alignment(Alignment::Center)
     .style(Style::default().fg(Color::Cyan));
 ```
 
-### List
+### List (stateful)
+
+`render` takes `&mut self`, so keep a `ListState` in your component:
 
 ```rust
+// In your struct: state: ListState
 let items = self.items.iter().map(|item| ListItem::new(item.as_str()));
 
 let widget = List::new(items)
-    .block(Block::default().borders(Borders::ALL).title("Items"))
-    .highlight_style(Style::default().bg(Color::Cyan).fg(Color::Black));
+    .block(Block::bordered().title("Items"))
+    .highlight_style(Style::default().bg(Color::Cyan).fg(Color::Black))
+    .highlight_symbol("► ");
+
+frame.render_stateful_widget(widget, area, &mut self.state);
 ```
+
+Navigate with `self.state.select_next()` / `self.state.select_previous()`.
 
 ### Gauge
 
 ```rust
 let widget = Gauge::default()
-    .block(Block::default().borders(Borders::ALL).title("Progress"))
+    .block(Block::bordered().title("Progress"))
     .percent(self.progress)
     .gauge_style(Style::default().fg(Color::Green));
 ```
@@ -292,10 +314,12 @@ match event {
 - Precompute expensive strings/data in `update` or event handlers.
 - Return `Consumed` only when state changed or the UI should redraw.
 - Tune `tick_rate` for animation. Slower ticks mean less redraw pressure.
-- Use `Context::message_sender()` for background work instead of blocking in `handle_event`.
+- Use `Context::sender()` and a spawned task for background work instead of blocking in `handle_event`.
 - Keep terminal input polling modest. The default is 50ms.
 
 ## Debugging
+
+Panics are safe: a panic hook restores the terminal before the message prints, so you get a readable backtrace (`RUST_BACKTRACE=1 cargo run`).
 
 The terminal is captured while the app runs, so write debug output to a file:
 
@@ -311,7 +335,7 @@ let mut file = OpenOptions::new()
 writeln!(file, "state = {:?}", self.state)?;
 ```
 
-If the terminal is left in a bad state after a hard crash:
+If the terminal is left in a bad state after a hard kill:
 
 ```bash
 reset
