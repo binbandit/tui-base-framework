@@ -39,3 +39,54 @@ impl Component for Starter {
 fn main() -> Result<()> {
     run(Starter)
 }
+
+// Components are plain structs, so they test without a real terminal:
+// feed events with `Event::key_press`, assert with `Context::test`, and
+// render into a `TestBackend` to check what's on screen.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tui_base_framework::Terminal;
+    use tui_base_framework::backend::TestBackend;
+
+    #[test]
+    fn q_quits() {
+        let (context, _messages) = Context::test();
+        let mut app = Starter;
+
+        let result = app.handle_event(Event::key_press(KeyCode::Char('q')), &context);
+
+        assert_eq!(result, EventResult::Consumed);
+        assert!(context.quit_requested());
+    }
+
+    #[test]
+    fn other_keys_propagate() {
+        let (context, _messages) = Context::test();
+        let mut app = Starter;
+
+        let result = app.handle_event(Event::key_press(KeyCode::Char('x')), &context);
+
+        assert_eq!(result, EventResult::Propagate);
+        assert!(!context.quit_requested());
+    }
+
+    #[test]
+    fn renders_welcome_screen() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        let mut app = Starter;
+
+        terminal
+            .draw(|frame| app.render(frame, frame.area()))
+            .unwrap();
+
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("Welcome to your new TUI!"));
+    }
+}

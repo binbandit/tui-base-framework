@@ -68,8 +68,31 @@ impl<M> Context<M> {
         self.quit_notify.notify_one();
     }
 
-    pub(crate) fn quit_requested(&self) -> bool {
+    /// Returns `true` once [`Context::quit`] has been called.
+    ///
+    /// The app loop checks this internally; in unit tests, use it to assert
+    /// that an event handler requested exit.
+    pub fn quit_requested(&self) -> bool {
         self.quit_requested.load(Ordering::Relaxed)
+    }
+
+    /// Creates a context for unit-testing components without a terminal,
+    /// plus the receiving end of its message channel.
+    ///
+    /// ```
+    /// use tui_base_framework::Context;
+    ///
+    /// let (context, mut messages) = Context::<String>::test();
+    ///
+    /// context.try_send("saved".to_string()).unwrap();
+    /// context.quit();
+    ///
+    /// assert_eq!(messages.try_recv().unwrap(), "saved");
+    /// assert!(context.quit_requested());
+    /// ```
+    pub fn test() -> (Self, mpsc::Receiver<M>) {
+        let (sender, receiver) = mpsc::channel(64);
+        (Self::new(sender), receiver)
     }
 
     pub(crate) fn reset_quit(&self) {

@@ -21,6 +21,8 @@ cargo run --example layout_demo
 cargo run --example tabs
 cargo run --example progress
 cargo run --example async_task
+cargo run --example focus
+cargo run --example mouse
 ```
 
 All examples support `q` to quit. Ctrl-C also exits through the framework default.
@@ -37,6 +39,8 @@ All examples support `q` to quit. Ctrl-C also exits through the framework defaul
 | `tabs` | View switching with Ratatui tabs | Left/right, Tab, `q` |
 | `progress` | Tick-driven updates and a custom tick rate | Space, `r`, `q` |
 | `async_task` | Background Tokio task + typed messages | `s`, `q` |
+| `focus` | Multi-component composition and focus routing | Tab, up/down, `q` |
+| `mouse` | Mouse capture: click, drag, scroll | Mouse, `c`, `q` |
 
 ## Learning Path
 
@@ -47,7 +51,8 @@ All examples support `q` to quit. Ctrl-C also exits through the framework defaul
 5. Use `layout_demo` when you need multiple panels.
 6. Use `tabs` for view switching.
 7. Use `progress` for tick-based updates.
-8. Finish with `async_task` for background work and typed messages — the reason Tokio is here.
+8. Move to `async_task` for background work and typed messages — the reason Tokio is here.
+9. Finish with `focus` to see how components compose once your app outgrows one screen; `mouse` if you need pointer input.
 
 ## Use an Example as Your App
 

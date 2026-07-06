@@ -147,6 +147,16 @@ match key.code {
 
 ## Modifiers
 
+Exact-chord bindings:
+
+```rust
+if event.is_key_with(KeyCode::Char('s'), KeyModifiers::CONTROL) {
+    // Ctrl+S
+}
+```
+
+Inspecting a key event directly:
+
 ```rust
 if key.modifiers.contains(KeyModifiers::CONTROL) {
     // Ctrl is pressed
@@ -331,6 +341,65 @@ match event {
     _ => EventResult::Propagate,
 }
 ```
+
+## Composing Components
+
+Children are ordinary `Component` structs owned by a parent. Route events to the focused child first; handle what propagates back:
+
+```rust
+fn handle_event(&mut self, event: Event, context: &Context<Msg>) -> EventResult {
+    if self.sidebar.handle_event(event.clone(), context).is_consumed() {
+        return EventResult::Consumed;
+    }
+
+    if event.is_key(KeyCode::Tab) {
+        self.toggle_focus();
+        return EventResult::Consumed;
+    }
+
+    EventResult::Propagate
+}
+```
+
+See `examples/focus.rs` for the full pattern including focus highlighting.
+
+## Testing
+
+Components test without a terminal:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tui_base_framework::Terminal;
+    use tui_base_framework::backend::TestBackend;
+
+    #[test]
+    fn q_quits() {
+        let (context, mut _messages) = Context::test();
+        let mut app = MyApp::new();
+
+        let result = app.handle_event(Event::key_press(KeyCode::Char('q')), &context);
+
+        assert_eq!(result, EventResult::Consumed);
+        assert!(context.quit_requested());
+    }
+
+    #[test]
+    fn renders() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        let mut app = MyApp::new();
+
+        terminal.draw(|frame| app.render(frame, frame.area())).unwrap();
+
+        let screen: String = terminal.backend().buffer().content()
+            .iter().map(|cell| cell.symbol()).collect();
+        assert!(screen.contains("expected text"));
+    }
+}
+```
+
+Assert on sent messages with the receiver from `Context::test()`: `assert!(matches!(_messages.try_recv(), Ok(Msg::Saved)))`.
 
 ## Performance
 

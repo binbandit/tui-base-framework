@@ -21,8 +21,10 @@ pub use crossterm::event::{
 };
 
 // Ratatui building blocks used by nearly every `render` implementation.
+// `Terminal` and `backend` are re-exported so component tests can render
+// into `Terminal<TestBackend>` without importing ratatui directly.
 pub use ratatui::{
-    layout,
+    Terminal, backend, layout,
     prelude::{Frame, Rect},
     style, text, widgets,
 };

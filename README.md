@@ -242,6 +242,8 @@ Each example is one self-contained file you can read top to bottom and copy over
 | `tabs` | View switching |
 | `progress` | Tick-driven updates and a custom tick rate |
 | `async_task` | Background Tokio task reporting progress via typed messages |
+| `focus` | Composing components: parent routes events to the focused child |
+| `mouse` | Mouse capture: click, drag, and scroll handling |
 
 ```bash
 cargo run --example async_task
@@ -274,6 +276,37 @@ The framework lives entirely under `src/tui/` and your app only imports from it 
 2. Pick the example closest to your app and copy it to `src/main.rs` (or just edit the starter that's already there).
 3. Replace the example state and rendering with your domain.
 4. Keep the app loop until you have a reason to own lower-level terminal details — the `src/tui/` folder is yours to modify too.
+
+## Testing Your Components
+
+Components are plain structs, so they test without a terminal. `Context::test()` gives you a context plus the receiving end of its message channel; `Event::key_press` fabricates input; ratatui's `TestBackend` (re-exported) checks what actually renders:
+
+```rust
+#[test]
+fn q_quits() {
+    let (context, _messages) = Context::test();
+    let mut app = MyApp::new();
+
+    let result = app.handle_event(Event::key_press(KeyCode::Char('q')), &context);
+
+    assert_eq!(result, EventResult::Consumed);
+    assert!(context.quit_requested());
+}
+
+#[test]
+fn renders_title() {
+    let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    let mut app = MyApp::new();
+
+    terminal.draw(|frame| app.render(frame, frame.area())).unwrap();
+
+    let screen: String = terminal.backend().buffer().content()
+        .iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("My App"));
+}
+```
+
+The starter `src/main.rs` ships with working tests in this style — `cargo test` passes from the first minute, and new components can copy the pattern.
 
 ## Performance Defaults
 

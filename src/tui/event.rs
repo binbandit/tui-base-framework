@@ -2,7 +2,7 @@
 //!
 //! [`Component::handle_event`]: crate::tui::Component::handle_event
 
-use crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, MouseEvent};
+use crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 /// A terminal event or timer tick.
 #[derive(Debug, Clone)]
@@ -24,6 +24,12 @@ pub enum Event {
 }
 
 impl Event {
+    /// Creates a key-press event with no modifiers. Mainly useful for
+    /// feeding events to components in unit tests.
+    pub fn key_press(code: KeyCode) -> Self {
+        Self::Key(KeyEvent::from(code))
+    }
+
     /// Returns the key event if this is a key press.
     pub const fn key(&self) -> Option<&KeyEvent> {
         match self {
@@ -44,6 +50,19 @@ impl Event {
     /// ```
     pub fn is_key(&self, code: KeyCode) -> bool {
         matches!(self, Self::Key(key) if key.code == code)
+    }
+
+    /// Returns `true` if this event is a press of `code` with exactly the
+    /// given modifiers, e.g. Ctrl+S:
+    ///
+    /// ```ignore
+    /// if event.is_key_with(KeyCode::Char('s'), KeyModifiers::CONTROL) {
+    ///     self.save();
+    ///     return EventResult::Consumed;
+    /// }
+    /// ```
+    pub fn is_key_with(&self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        matches!(self, Self::Key(key) if key.code == code && key.modifiers == modifiers)
     }
 }
 
@@ -80,14 +99,22 @@ impl EventResult {
 #[cfg(test)]
 mod tests {
     use super::Event;
-    use crossterm::event::{KeyCode, KeyEvent};
+    use crossterm::event::{KeyCode, KeyModifiers};
 
     #[test]
     fn is_key_matches_code_regardless_of_state() {
-        let event = Event::Key(KeyEvent::from(KeyCode::Char('q')));
+        let event = Event::key_press(KeyCode::Char('q'));
 
         assert!(event.is_key(KeyCode::Char('q')));
         assert!(!event.is_key(KeyCode::Esc));
         assert!(!Event::Tick.is_key(KeyCode::Char('q')));
+    }
+
+    #[test]
+    fn is_key_with_requires_exact_modifiers() {
+        let plain = Event::key_press(KeyCode::Char('s'));
+
+        assert!(plain.is_key_with(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(!plain.is_key_with(KeyCode::Char('s'), KeyModifiers::CONTROL));
     }
 }
