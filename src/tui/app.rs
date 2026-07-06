@@ -1,8 +1,8 @@
 //! The app loop: terminal lifecycle, event pump, and redraw scheduling.
 
-use crate::Event;
-use crate::component::{Component, Context};
-use crate::terminal::{TerminalConfig, TerminalGuard};
+use crate::tui::component::{Component, Context};
+use crate::tui::event::Event;
+use crate::tui::terminal::{TerminalConfig, TerminalGuard};
 use anyhow::{Context as AnyhowContext, Result};
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use std::sync::{
@@ -15,6 +15,33 @@ use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 type RuntimeEvent = Result<Event>;
+
+/// Runs `component` until it quits, creating the Tokio runtime for you.
+///
+/// This is all a typical `main` needs:
+///
+/// ```ignore
+/// fn main() -> anyhow::Result<()> {
+///     tui_base_framework::run(MyApp::new())
+/// }
+/// ```
+///
+/// Components can still `tokio::spawn` background tasks — they run on the
+/// runtime created here. If you need async setup before the UI starts, or
+/// your own runtime configuration, use `#[tokio::main]` with [`App`] instead.
+pub fn run<C: Component>(component: C) -> Result<()> {
+    run_with_config(component, AppConfig::default())
+}
+
+/// Like [`run`], with a custom [`AppConfig`].
+pub fn run_with_config<C: Component>(component: C, config: AppConfig) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .build()
+        .context("build tokio runtime")?;
+
+    runtime.block_on(async move { App::with_config(component, config)?.run().await })
+}
 
 /// Runtime tuning knobs. Start from [`AppConfig::default`] and override what
 /// you need with struct-update syntax.

@@ -19,8 +19,18 @@ Most TUI starters either leave you wiring every terminal detail yourself or intr
 ```bash
 git clone https://github.com/binbandit/tui-base-framework my-tui-app
 cd my-tui-app
+./setup.sh my-tui-app     # make the project yours (one command)
 cargo run
 ```
+
+`setup.sh` renames the crate everywhere, fills in your author info from git config, and cleans up the template metadata. Two flags cover the common paths:
+
+```bash
+./setup.sh my-tui-app                # keep the lib + examples (learning mode)
+./setup.sh my-tui-app --app-only     # binary-only app: no lib.rs, no examples
+```
+
+`--app-only` is the right choice when you're building an application: it folds the framework into your binary as a plain `src/tui/` module — no library target, nothing published, just your app. The script verifies the result with `cargo check` and deletes itself when done. (`--no-examples`, `--fresh-git`, and `--yes` for non-interactive use are also available; run `./setup.sh --help`.)
 
 `cargo run` launches a small starter app whose code lives in `src/main.rs`, ready to edit. Or start from an example — every example is a single self-contained file:
 
@@ -32,9 +42,11 @@ cargo run
 
 ## Minimal App
 
+No async boilerplate — `run` creates the Tokio runtime for you:
+
 ```rust
 use anyhow::Result;
-use tui_base_framework::{App, Component, Context, Event, EventResult, Frame, KeyCode, Rect};
+use tui_base_framework::{run, Component, Context, Event, EventResult, Frame, KeyCode, Rect};
 use tui_base_framework::widgets::{Block, Paragraph};
 
 struct Counter {
@@ -73,9 +85,18 @@ impl Component for Counter {
     }
 }
 
+fn main() -> Result<()> {
+    run(Counter { count: 0 })
+}
+```
+
+Need async setup before the UI starts, or your own runtime? Use `#[tokio::main]` and drive `App` directly:
+
+```rust
 #[tokio::main]
-async fn main() -> Result<()> {
-    App::new(Counter { count: 0 })?.run().await
+async fn main() -> anyhow::Result<()> {
+    let data = load_config().await?;
+    tui_base_framework::App::new(MyApp::new(data))?.run().await
 }
 ```
 
@@ -101,6 +122,15 @@ pub trait Component: Send {
 Return `EventResult::Consumed` when an event changed state and should trigger a redraw. Return `EventResult::Propagate` when you ignored it.
 
 `render` takes `&mut self`, so stateful Ratatui widgets (`ListState`, `TableState`, scroll offsets) live directly in your component — see `examples/list_selector.rs`.
+
+For one-key bindings, `Event::is_key` collapses the match boilerplate:
+
+```rust
+if event.is_key(KeyCode::Char('q')) || event.is_key(KeyCode::Esc) {
+    context.quit();
+    return EventResult::Consumed;
+}
+```
 
 ### Messages
 
@@ -175,11 +205,11 @@ pub enum Event {
 
 ## Configuration
 
-Use `App::with_config` when you need to tune runtime behavior:
+Use `run_with_config` (or `App::with_config`) when you need to tune runtime behavior:
 
 ```rust
 use std::time::Duration;
-use tui_base_framework::{App, AppConfig, TerminalConfig};
+use tui_base_framework::{run_with_config, AppConfig, TerminalConfig};
 
 let config = AppConfig {
     tick_rate: Duration::from_millis(100),
@@ -193,7 +223,7 @@ let config = AppConfig {
     },
 };
 
-let mut app = App::with_config(component, config)?;
+run_with_config(component, config)?;
 ```
 
 Mouse capture and focus change are opt-in because they change normal terminal behavior. Bracketed paste is enabled by default so paste input arrives as a single `Event::Paste(String)`.
@@ -222,25 +252,28 @@ cargo run --example async_task
 ```text
 tui-base-framework/
 ├── src/
-│   ├── app.rs           # App loop, config, event pump
-│   ├── component.rs     # Component trait and Context
-│   ├── event.rs         # Framework event type
-│   ├── terminal.rs      # TerminalGuard, terminal config, panic hook
-│   ├── lib.rs           # Public exports
+│   ├── tui/             # The framework (self-contained)
+│   │   ├── mod.rs       #   Re-exports: everything apps import
+│   │   ├── app.rs       #   App loop, config, run() helpers
+│   │   ├── component.rs #   Component trait and Context
+│   │   ├── event.rs     #   Framework event type
+│   │   └── terminal.rs  #   TerminalGuard, terminal config, panic hook
+│   ├── lib.rs           # Thin re-export of src/tui/
 │   └── main.rs          # Your app starts here
 ├── examples/            # Self-contained runnable examples
+├── setup.sh             # One-command project setup
 ├── CHEATSHEET.md        # Copy-paste reference for common tasks
 └── Cargo.toml
 ```
 
-When you are done learning from the examples, delete the `examples/` directory — nothing else references it.
+The framework lives entirely under `src/tui/` and your app only imports from it — that clean boundary is what lets `setup.sh --app-only` fold it into a binary-only project mechanically. When you are done learning from the examples, delete the `examples/` directory — nothing else references it.
 
 ## Customizing
 
-1. Update `Cargo.toml` with your project name, authors, description, repository, and license.
+1. Run `./setup.sh <your-app-name>` (see Quick Start) — it handles Cargo.toml metadata and renames for you.
 2. Pick the example closest to your app and copy it to `src/main.rs` (or just edit the starter that's already there).
 3. Replace the example state and rendering with your domain.
-4. Keep the app loop until you have a reason to own lower-level terminal details.
+4. Keep the app loop until you have a reason to own lower-level terminal details — the `src/tui/` folder is yours to modify too.
 
 ## Performance Defaults
 
@@ -272,7 +305,7 @@ If the UI does not redraw after input, make sure the component returns `EventRes
 - `tokio` 1.x with minimal runtime features
 - `anyhow` 1.0 for ergonomic error handling
 
-`Cargo.lock` is tracked because this is an application template. New projects get reproducible example builds immediately, then can update dependencies on their own cadence.
+The minimum supported Rust version is **1.88** (edition 2024), checked in CI. `Cargo.lock` is tracked because this is an application template. New projects get reproducible example builds immediately, then can update dependencies on their own cadence (`cargo update`).
 
 ## License
 

@@ -9,8 +9,8 @@ Input types (`KeyCode`, `KeyModifiers`, ...) and Ratatui modules (`layout`, `sty
 ```rust
 use anyhow::Result;
 use tui_base_framework::{
-    App, AppConfig, Component, Context, Event, EventResult, Frame, KeyCode, KeyModifiers,
-    MouseButton, MouseEventKind, Rect, TerminalConfig,
+    AppConfig, Component, Context, Event, EventResult, Frame, KeyCode, KeyModifiers,
+    MouseButton, MouseEventKind, Rect, TerminalConfig, run, run_with_config,
 };
 use tui_base_framework::layout::{Alignment, Constraint, Layout};
 use tui_base_framework::style::{Color, Modifier, Style};
@@ -55,10 +55,23 @@ impl Component for MyComponent {
 
 ## Main
 
+`run` creates the Tokio runtime for you:
+
 ```rust
+fn main() -> Result<()> {
+    run(MyComponent { value: 0 })
+}
+```
+
+If you need async setup before the UI starts, use `#[tokio::main]` with `App`:
+
+```rust
+use tui_base_framework::App;
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    App::new(MyComponent { value: 0 })?.run().await
+    let data = load_data().await?;
+    App::new(MyComponent::new(data))?.run().await
 }
 ```
 
@@ -79,7 +92,7 @@ let config = AppConfig {
     },
 };
 
-let mut app = App::with_config(component, config)?;
+run_with_config(component, config)?;
 ```
 
 ## Events
@@ -99,6 +112,17 @@ match event {
 Return `EventResult::Consumed` when state changed. Return `EventResult::Propagate` for ignored events.
 
 ## Keyboard
+
+One-key bindings — `Event::is_key` skips the match entirely:
+
+```rust
+if event.is_key(KeyCode::Char('q')) || event.is_key(KeyCode::Esc) {
+    context.quit();
+    return EventResult::Consumed;
+}
+```
+
+Full matching over a key event:
 
 ```rust
 match key.code {

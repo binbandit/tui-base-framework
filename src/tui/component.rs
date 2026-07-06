@@ -1,7 +1,7 @@
 //! The [`Component`] trait and the [`Context`] handle components use to talk
 //! back to the app loop.
 
-use crate::event::{Event, EventResult};
+use crate::tui::event::{Event, EventResult};
 use ratatui::{Frame, layout::Rect};
 use std::sync::{
     Arc,
@@ -84,7 +84,7 @@ impl<M> Context<M> {
 
 /// A unit of UI: state, rendering, and input handling.
 ///
-/// This is the only trait you implement. The [`App`](crate::App) loop calls
+/// This is the only trait you implement. The [`App`](crate::tui::App) loop calls
 /// [`render`](Component::render) whenever the UI needs a repaint,
 /// [`handle_event`](Component::handle_event) for every terminal event, and
 /// [`update`](Component::update) for every message sent through the

@@ -11,7 +11,7 @@ use tui_base_framework::layout::{Constraint, Layout};
 use tui_base_framework::style::{Color, Style};
 use tui_base_framework::widgets::{Block, Gauge, Paragraph};
 use tui_base_framework::{
-    App, AppConfig, Component, Context, Event, EventResult, Frame, KeyCode, Rect,
+    AppConfig, Component, Context, Event, EventResult, Frame, KeyCode, Rect, run_with_config,
 };
 
 struct ProgressDemo {
@@ -91,8 +91,7 @@ impl Component for ProgressDemo {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let config = AppConfig {
         tick_rate: Duration::from_millis(50),
         ..AppConfig::default()
@@ -103,5 +102,5 @@ async fn main() -> Result<()> {
         paused: false,
     };
 
-    App::with_config(component, config)?.run().await
+    run_with_config(component, config)
 }

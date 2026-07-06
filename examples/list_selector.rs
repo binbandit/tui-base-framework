@@ -8,7 +8,7 @@
 use anyhow::Result;
 use tui_base_framework::style::{Color, Modifier, Style};
 use tui_base_framework::widgets::{Block, List, ListItem, ListState};
-use tui_base_framework::{App, Component, Context, Event, EventResult, Frame, KeyCode, Rect};
+use tui_base_framework::{Component, Context, Event, EventResult, Frame, KeyCode, Rect, run};
 
 struct ListSelector {
     items: Vec<String>,
@@ -75,9 +75,8 @@ impl Component for ListSelector {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let selector = ListSelector::new([
+fn main() -> Result<()> {
+    run(ListSelector::new([
         "Rust",
         "Python",
         "JavaScript",
@@ -85,7 +84,5 @@ async fn main() -> Result<()> {
         "TypeScript",
         "C++",
         "Java",
-    ]);
-
-    App::new(selector)?.run().await
+    ]))
 }

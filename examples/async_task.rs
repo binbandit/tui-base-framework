@@ -11,7 +11,7 @@ use std::time::Duration;
 use tui_base_framework::layout::{Constraint, Layout};
 use tui_base_framework::style::{Color, Style};
 use tui_base_framework::widgets::{Block, Gauge, Paragraph};
-use tui_base_framework::{App, Component, Context, Event, EventResult, Frame, KeyCode, Rect};
+use tui_base_framework::{Component, Context, Event, EventResult, Frame, KeyCode, Rect, run};
 
 /// Everything the background task can tell the UI.
 enum Msg {
@@ -117,11 +117,8 @@ impl Component for Downloader {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    App::new(Downloader {
+fn main() -> Result<()> {
+    run(Downloader {
         job: JobState::Idle,
-    })?
-    .run()
-    .await
+    })
 }

@@ -6,7 +6,7 @@ use anyhow::Result;
 use tui_base_framework::layout::{Constraint, Layout};
 use tui_base_framework::style::{Color, Modifier, Style};
 use tui_base_framework::widgets::{Block, Paragraph, Tabs};
-use tui_base_framework::{App, Component, Context, Event, EventResult, Frame, KeyCode, Rect};
+use tui_base_framework::{Component, Context, Event, EventResult, Frame, KeyCode, Rect, run};
 
 const TABS: [&str; 3] = ["Home", "Settings", "About"];
 
@@ -77,7 +77,6 @@ impl Component for TabsDemo {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    App::new(TabsDemo { selected: 0 })?.run().await
+fn main() -> Result<()> {
+    run(TabsDemo { selected: 0 })
 }

@@ -6,7 +6,7 @@ use anyhow::Result;
 use tui_base_framework::layout::Alignment;
 use tui_base_framework::style::{Color, Style};
 use tui_base_framework::widgets::{Block, Paragraph};
-use tui_base_framework::{App, Component, Context, Event, EventResult, Frame, KeyCode, Rect};
+use tui_base_framework::{Component, Context, Event, EventResult, Frame, KeyCode, Rect, run};
 
 struct HelloWorld;
 
@@ -26,9 +26,7 @@ impl Component for HelloWorld {
     }
 
     fn handle_event(&mut self, event: Event, context: &Context<Self::Message>) -> EventResult {
-        if let Event::Key(key) = event
-            && matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
-        {
+        if event.is_key(KeyCode::Char('q')) || event.is_key(KeyCode::Esc) {
             context.quit();
             return EventResult::Consumed;
         }
@@ -37,7 +35,6 @@ impl Component for HelloWorld {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    App::new(HelloWorld)?.run().await
+fn main() -> Result<()> {
+    run(HelloWorld)
 }

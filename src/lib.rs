@@ -1,13 +1,13 @@
 //! A small, fast foundation for terminal UIs built on Ratatui, Crossterm, and
 //! Tokio.
 //!
-//! Implement [`Component`] for your app state, hand it to [`App`], and the
-//! runtime takes care of the terminal lifecycle, input, ticks, typed message
-//! passing, and event-driven redraws.
+//! Implement [`Component`] for your app state, hand it to [`run`], and the
+//! framework takes care of the terminal lifecycle, input, ticks, typed
+//! message passing, and event-driven redraws.
 //!
 //! ```no_run
 //! use anyhow::Result;
-//! use tui_base_framework::{App, Component, Context, Event, EventResult, Frame, KeyCode, Rect};
+//! use tui_base_framework::{Component, Context, Event, EventResult, Frame, KeyCode, Rect};
 //! use tui_base_framework::widgets::Paragraph;
 //!
 //! struct Hello;
@@ -20,9 +20,7 @@
 //!     }
 //!
 //!     fn handle_event(&mut self, event: Event, context: &Context<()>) -> EventResult {
-//!         if let Event::Key(key) = event
-//!             && key.code == KeyCode::Char('q')
-//!         {
+//!         if event.is_key(KeyCode::Char('q')) {
 //!             context.quit();
 //!             return EventResult::Consumed;
 //!         }
@@ -30,30 +28,15 @@
 //!     }
 //! }
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<()> {
-//!     App::new(Hello)?.run().await
+//! fn main() -> Result<()> {
+//!     tui_base_framework::run(Hello)
 //! }
 //! ```
+//!
+//! The framework lives entirely in the [`tui`] module; this crate root just
+//! re-exports it. Run `./setup.sh <name> --app-only` to fold it into a
+//! binary-only project.
 
-pub mod app;
-pub mod component;
-pub mod event;
-pub mod terminal;
+pub mod tui;
 
-pub use app::{App, AppConfig};
-pub use component::{Component, Context};
-pub use event::{Event, EventResult};
-pub use terminal::{TerminalConfig, TerminalGuard, TerminalType};
-
-// Input types every component needs, so app code can import from one crate.
-pub use crossterm::event::{
-    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
-
-// Ratatui building blocks used by nearly every `render` implementation.
-pub use ratatui::{
-    layout,
-    prelude::{Frame, Rect},
-    style, text, widgets,
-};
+pub use tui::*;

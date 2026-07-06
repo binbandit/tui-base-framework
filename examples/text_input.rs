@@ -6,7 +6,7 @@ use anyhow::Result;
 use tui_base_framework::style::{Color, Style};
 use tui_base_framework::widgets::{Block, Paragraph};
 use tui_base_framework::{
-    App, Component, Context, Event, EventResult, Frame, KeyCode, KeyModifiers, Rect,
+    Component, Context, Event, EventResult, Frame, KeyCode, KeyModifiers, Rect, run,
 };
 
 struct TextInput {
@@ -71,11 +71,8 @@ impl Component for TextInput {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    App::new(TextInput {
+fn main() -> Result<()> {
+    run(TextInput {
         input: String::new(),
-    })?
-    .run()
-    .await
+    })
 }

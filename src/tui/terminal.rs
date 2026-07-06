@@ -8,7 +8,10 @@ use crossterm::{
         EnableFocusChange, EnableMouseCapture,
     },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
+    },
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io::{self, Stdout};
@@ -22,13 +25,13 @@ pub type TerminalType = Terminal<CrosstermBackend<Stdout>>;
 /// capture breaks native text selection).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalConfig {
-    /// Receive [`Event::Mouse`](crate::Event::Mouse) events.
+    /// Receive [`Event::Mouse`](crate::tui::Event::Mouse) events.
     pub mouse_capture: bool,
-    /// Receive pasted text as a single [`Event::Paste`](crate::Event::Paste)
+    /// Receive pasted text as a single [`Event::Paste`](crate::tui::Event::Paste)
     /// instead of a burst of key events.
     pub bracketed_paste: bool,
-    /// Receive [`Event::FocusGained`](crate::Event::FocusGained) and
-    /// [`Event::FocusLost`](crate::Event::FocusLost) events.
+    /// Receive [`Event::FocusGained`](crate::tui::Event::FocusGained) and
+    /// [`Event::FocusLost`](crate::tui::Event::FocusLost) events.
     pub focus_change: bool,
 }
 
@@ -68,18 +71,13 @@ impl TerminalGuard {
         }
 
         let backend = CrosstermBackend::new(stdout);
-        let mut terminal = match Terminal::new(backend) {
+        let terminal = match Terminal::new(backend) {
             Ok(terminal) => terminal,
             Err(error) => {
                 restore_terminal();
                 return Err(error).context("create ratatui terminal");
             }
         };
-
-        if let Err(error) = terminal.clear() {
-            restore_terminal();
-            return Err(error).context("clear terminal");
-        }
 
         Ok(Self { terminal })
     }
@@ -90,7 +88,10 @@ impl TerminalGuard {
     }
 
     fn enter_terminal(mut stdout: impl io::Write, config: TerminalConfig) -> io::Result<()> {
-        execute!(stdout, EnterAlternateScreen, Hide)?;
+        // Clear with a plain escape code rather than `Terminal::clear`, which
+        // round-trips a cursor-position query through stdin and hangs when
+        // the app runs without a responding terminal (CI, pipes, tests).
+        execute!(stdout, EnterAlternateScreen, Clear(ClearType::All), Hide)?;
 
         if config.mouse_capture {
             execute!(stdout, EnableMouseCapture)?;

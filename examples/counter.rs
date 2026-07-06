@@ -6,7 +6,7 @@ use anyhow::Result;
 use tui_base_framework::layout::Alignment;
 use tui_base_framework::widgets::Paragraph;
 use tui_base_framework::{
-    App, Component, Context, Event, EventResult, Frame, KeyCode, KeyModifiers, Rect,
+    Component, Context, Event, EventResult, Frame, KeyCode, KeyModifiers, Rect, run,
 };
 
 struct Counter {
@@ -49,7 +49,6 @@ impl Component for Counter {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    App::new(Counter { count: 0 })?.run().await
+fn main() -> Result<()> {
+    run(Counter { count: 0 })
 }
