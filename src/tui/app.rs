@@ -1,6 +1,8 @@
-use crate::component::{Component, Context, MessageSender};
-use crate::terminal::{TerminalConfig, TerminalGuard};
-use crate::{Event, Message};
+//! The app loop: terminal lifecycle, event pump, and redraw scheduling.
+
+use crate::tui::component::{Component, Context};
+use crate::tui::event::Event;
+use crate::tui::terminal::{TerminalConfig, TerminalGuard};
 use anyhow::{Context as AnyhowContext, Result};
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use std::sync::{
@@ -14,12 +16,47 @@ use tokio::time::MissedTickBehavior;
 
 type RuntimeEvent = Result<Event>;
 
+/// Runs `component` until it quits, creating the Tokio runtime for you.
+///
+/// This is all a typical `main` needs:
+///
+/// ```ignore
+/// fn main() -> anyhow::Result<()> {
+///     tui_base_framework::run(MyApp::new())
+/// }
+/// ```
+///
+/// Components can still `tokio::spawn` background tasks — they run on the
+/// runtime created here. If you need async setup before the UI starts, or
+/// your own runtime configuration, use `#[tokio::main]` with [`App`] instead.
+pub fn run<C: Component>(component: C) -> Result<()> {
+    run_with_config(component, AppConfig::default())
+}
+
+/// Like [`run`], with a custom [`AppConfig`].
+pub fn run_with_config<C: Component>(component: C, config: AppConfig) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .build()
+        .context("build tokio runtime")?;
+
+    runtime.block_on(async move { App::with_config(component, config)?.run().await })
+}
+
+/// Runtime tuning knobs. Start from [`AppConfig::default`] and override what
+/// you need with struct-update syntax.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    /// How often [`Event::Tick`] fires. Lower it for smoother animation.
     pub tick_rate: Duration,
+    /// How long the input thread blocks waiting for terminal input before
+    /// checking for shutdown. Rarely needs tuning.
     pub input_poll_rate: Duration,
+    /// Capacity of the event and message channels.
     pub channel_capacity: usize,
+    /// Exit the app loop on Ctrl-C. Disable to handle it yourself.
     pub quit_on_ctrl_c: bool,
+    /// Terminal features to enable (mouse capture, bracketed paste, ...).
     pub terminal: TerminalConfig,
 }
 
@@ -49,6 +86,10 @@ impl AppConfig {
     }
 }
 
+/// Owns the terminal and drives a [`Component`].
+///
+/// Construction puts the terminal into raw mode and the alternate screen;
+/// dropping the `App` (or panicking) restores it.
 pub struct App<C>
 where
     C: Component,
@@ -56,8 +97,8 @@ where
     terminal_guard: TerminalGuard,
     component: C,
     config: AppConfig,
-    message_tx: MessageSender,
-    message_rx: mpsc::Receiver<Message>,
+    context: Context<C::Message>,
+    message_rx: mpsc::Receiver<C::Message>,
     should_quit: bool,
 }
 
@@ -65,10 +106,12 @@ impl<C> App<C>
 where
     C: Component,
 {
+    /// Creates an app with [`AppConfig::default`] and takes over the terminal.
     pub fn new(component: C) -> Result<Self> {
         Self::with_config(component, AppConfig::default())
     }
 
+    /// Creates an app with a custom [`AppConfig`] and takes over the terminal.
     pub fn with_config(component: C, config: AppConfig) -> Result<Self> {
         let terminal_guard = TerminalGuard::with_config(config.terminal)?;
         let (message_tx, message_rx) = mpsc::channel(config.channel_capacity());
@@ -77,18 +120,23 @@ where
             terminal_guard,
             component,
             config,
-            message_tx,
+            context: Context::new(message_tx),
             message_rx,
             should_quit: false,
         })
     }
 
-    pub fn message_sender(&self) -> MessageSender {
-        self.message_tx.clone()
+    /// Returns a sender that delivers messages to the component from outside
+    /// the app loop (for example, a task spawned before [`App::run`]).
+    pub fn message_sender(&self) -> mpsc::Sender<C::Message> {
+        self.context.sender()
     }
 
+    /// Runs the app loop until the component quits, Ctrl-C is pressed (when
+    /// enabled), or an input error occurs.
     pub async fn run(&mut self) -> Result<()> {
         self.should_quit = false;
+        self.context.reset_quit();
 
         let (event_tx, mut event_rx) = mpsc::channel(self.config.channel_capacity());
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -110,16 +158,15 @@ where
     }
 
     async fn render_loop(&mut self, event_rx: &mut mpsc::Receiver<RuntimeEvent>) -> Result<()> {
-        let context = Context::new(self.message_tx.clone(), Arc::new(AtomicBool::new(false)));
+        let context = self.context.clone();
         let mut needs_render = true;
 
         self.component.init(&context);
-        self.sync_context_state(&context);
 
         loop {
             self.drain_queued_work(event_rx, &context, &mut needs_render)?;
 
-            if self.should_quit {
+            if self.quit_pending(&context) {
                 break;
             }
 
@@ -141,16 +188,19 @@ where
                         None => break,
                     }
                 }
+                () = context.quit_notified() => {}
             }
         }
 
         Ok(())
     }
 
+    /// Handles every already-queued message and event before rendering, so a
+    /// burst of input results in one redraw instead of one per event.
     fn drain_queued_work(
         &mut self,
         event_rx: &mut mpsc::Receiver<RuntimeEvent>,
-        context: &Context,
+        context: &Context<C::Message>,
         needs_render: &mut bool,
     ) -> Result<()> {
         loop {
@@ -160,7 +210,7 @@ where
                 made_progress = true;
                 self.handle_message(message, context, needs_render);
 
-                if self.should_quit {
+                if self.quit_pending(context) {
                     return Ok(());
                 }
             }
@@ -169,7 +219,7 @@ where
                 made_progress = true;
                 self.handle_runtime_event(event, context, needs_render)?;
 
-                if self.should_quit {
+                if self.quit_pending(context) {
                     return Ok(());
                 }
             }
@@ -180,17 +230,27 @@ where
         }
     }
 
+    fn quit_pending(&mut self, context: &Context<C::Message>) -> bool {
+        self.should_quit |= context.quit_requested();
+        self.should_quit
+    }
+
     fn handle_runtime_event(
         &mut self,
         event: RuntimeEvent,
-        context: &Context,
+        context: &Context<C::Message>,
         needs_render: &mut bool,
     ) -> Result<()> {
         self.handle_event(event?, context, needs_render);
         Ok(())
     }
 
-    fn handle_event(&mut self, event: Event, context: &Context, needs_render: &mut bool) {
+    fn handle_event(
+        &mut self,
+        event: Event,
+        context: &Context<C::Message>,
+        needs_render: &mut bool,
+    ) {
         if self.config.quit_on_ctrl_c && is_ctrl_c(&event) {
             self.should_quit = true;
             return;
@@ -198,36 +258,30 @@ where
 
         let redraw_for_terminal_change = matches!(event, Event::Resize(_, _));
         let result = self.component.handle_event(event, context);
-        self.sync_context_state(context);
 
         *needs_render |= redraw_for_terminal_change || result.is_consumed();
     }
 
-    fn handle_message(&mut self, message: Message, context: &Context, needs_render: &mut bool) {
-        match message {
-            Message::Quit => {
-                self.should_quit = true;
-            }
-            message => {
-                self.component.update(message, context);
-                self.sync_context_state(context);
-                *needs_render = true;
-            }
-        }
-    }
-
-    fn sync_context_state(&mut self, context: &Context) {
-        self.should_quit |= context.quit_requested();
+    fn handle_message(
+        &mut self,
+        message: C::Message,
+        context: &Context<C::Message>,
+        needs_render: &mut bool,
+    ) {
+        self.component.update(message, context);
+        *needs_render = true;
     }
 
     fn draw(&mut self) -> Result<()> {
-        let component = &self.component;
-        let terminal = self.terminal_guard.terminal();
+        let Self {
+            terminal_guard,
+            component,
+            ..
+        } = self;
 
-        terminal
-            .draw(|frame| {
-                component.render(frame, frame.area());
-            })
+        terminal_guard
+            .terminal()
+            .draw(|frame| component.render(frame, frame.area()))
             .context("draw terminal frame")?;
 
         Ok(())
@@ -272,6 +326,8 @@ async fn tick_loop(event_tx: mpsc::Sender<RuntimeEvent>, tick_rate: Duration) {
     loop {
         interval.tick().await;
 
+        // Drop the tick instead of queueing it when the UI is busy, so stale
+        // animation ticks never pile up into delayed redraws.
         match event_tx.try_send(Ok(Event::Tick)) {
             Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
             Err(mpsc::error::TrySendError::Closed(_)) => break,

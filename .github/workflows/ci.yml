@@ -33,8 +33,68 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+      - name: Doc tests
+        run: cargo test --doc
+
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Docs
         run: cargo doc --no-deps
+
+      - name: Shellcheck setup script
+        run: shellcheck setup.sh
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --all-targets
+
+  setup-script:
+    name: Setup script (${{ matrix.mode.name }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        mode:
+          - name: rename
+            flags: ""
+          - name: app-only
+            flags: "--app-only"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run setup.sh
+        run: ./setup.sh my-test-app ${{ matrix.mode.flags }} --yes
+
+      - name: Lint result
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+
+      - name: Test result
+        run: cargo test --all-targets

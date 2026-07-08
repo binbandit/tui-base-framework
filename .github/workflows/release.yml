@@ -1,0 +1,71 @@
+name: Release
+
+# Push a tag like v0.1.0 and this builds release binaries for the major
+# platforms and attaches them to a GitHub release. The binary name is read
+# from Cargo.toml, so this keeps working after ./setup.sh renames the
+# project.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target.name }})
+    runs-on: ${{ matrix.target.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { name: linux-x86_64, os: ubuntu-latest }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: macos-arm64, os: macos-latest }
+          - { name: macos-x86_64, os: macos-13 }
+          - { name: windows-x86_64, os: windows-latest }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked
+
+      - name: Package
+        shell: bash
+        run: |
+          NAME="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')"
+          ARCHIVE="$NAME-$GITHUB_REF_NAME-${{ matrix.target.name }}"
+          mkdir "$ARCHIVE"
+          cp README.md "$ARCHIVE/" 2>/dev/null || true
+          cp LICENSE* "$ARCHIVE/" 2>/dev/null || true
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp "target/release/$NAME.exe" "$ARCHIVE/"
+            7z a "$ARCHIVE.zip" "$ARCHIVE"
+            echo "ASSET=$ARCHIVE.zip" >> "$GITHUB_ENV"
+          else
+            cp "target/release/$NAME" "$ARCHIVE/"
+            tar czf "$ARCHIVE.tar.gz" "$ARCHIVE"
+            echo "ASSET=$ARCHIVE.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes 2>/dev/null || true
+          gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
