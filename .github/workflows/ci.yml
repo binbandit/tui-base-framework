@@ -46,17 +46,22 @@ jobs:
         run: shellcheck setup.sh
 
   msrv:
-    name: MSRV (1.88)
+    name: MSRV
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.88
+      # Read the MSRV from Cargo.toml so it can never drift from CI.
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: echo "msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust ${{ steps.msrv.outputs.msrv }}
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.88"
+          toolchain: ${{ steps.msrv.outputs.msrv }}
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
@@ -65,11 +70,14 @@ jobs:
         run: cargo check --all-targets
 
   setup-script:
-    name: Setup script (${{ matrix.mode.name }})
-    runs-on: ubuntu-latest
+    name: Setup script (${{ matrix.mode.name }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
 
     strategy:
       matrix:
+        # macOS ships BSD userland (sed/awk/find), so running the matrix there
+        # catches GNU-only shell constructs before users on Macs do.
+        os: [ubuntu-latest, macos-latest]
         mode:
           - name: rename
             flags: ""

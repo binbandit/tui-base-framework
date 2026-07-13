@@ -62,6 +62,7 @@ fi
 case "$NAME" in
     ''|*[!a-zA-Z0-9_-]*) err "invalid crate name: '$NAME' (use letters, digits, - and _)" ;;
     [0-9]*) err "crate names cannot start with a digit" ;;
+    tui) err "'tui' collides with the framework's internal module name; pick another" ;;
 esac
 IDENT="$(printf '%s' "$NAME" | tr '-' '_')"
 
@@ -113,6 +114,15 @@ note "reset description; removed repository/homepage/keywords/categories"
 sed -i.bak '/^# --- template setup /,/^# ----*$/d' Cargo.toml && rm -f Cargo.toml.bak
 sed -i.bak '/^$/N;/^\n$/D' Cargo.toml && rm -f Cargo.toml.bak
 
+# Strip template-maintenance sections from the agent docs; the framework guide
+# in the rest of the file still applies to the generated app.
+if [ -f AGENTS.md ]; then
+    sed -i.bak '/<!-- template-only:start -->/,/<!-- template-only:end -->/d' AGENTS.md \
+        && rm -f AGENTS.md.bak
+    sed -i.bak '/^$/N;/^\n$/D' AGENTS.md && rm -f AGENTS.md.bak
+    note "trimmed AGENTS.md to the app-facing guide"
+fi
+
 # ---------------------------------------------------------------------------
 # Optional: strip examples
 # ---------------------------------------------------------------------------
@@ -137,9 +147,17 @@ if $APP_ONLY; then
         -e "s/$IDENT::/crate::tui::/g" {} +
     find src -name '*.bak' -delete
     # In a binary crate, framework API your app doesn't use yet would warn as
-    # dead code; allow it on the module until you grow into it.
-    sed -i.bak "0,/^use /s//#[allow(dead_code, unused_imports)]\nmod tui;\n\nuse /" src/main.rs \
-        && rm -f src/main.rs.bak
+    # dead code; allow it on the module until you grow into it. (awk, not sed:
+    # inserting lines before a match is a GNU-sed extension that macOS lacks.)
+    awk '!done && /^use / {
+             print "#[allow(dead_code, unused_imports)]"
+             print "mod tui;"
+             print ""
+             done = 1
+         }
+         { print }' src/main.rs > src/main.rs.new && mv src/main.rs.new src/main.rs
+    grep -q '^mod tui;' src/main.rs \
+        || err "could not insert 'mod tui;' into src/main.rs (no 'use' line found?)"
 
     # Drop the now-stale template note from the module docs.
     sed -i.bak '/^\/\/!$/,/binary-only project unchanged/d' src/tui/mod.rs \
@@ -165,9 +183,6 @@ fi
 # ---------------------------------------------------------------------------
 # Verify and finish
 # ---------------------------------------------------------------------------
-rm -f -- "$0"
-note "removed setup.sh"
-
 if command -v cargo >/dev/null 2>&1; then
     echo "Verifying with 'cargo check'..."
     cargo fmt --quiet 2>/dev/null || true
@@ -176,6 +191,10 @@ if command -v cargo >/dev/null 2>&1; then
 else
     note "cargo not found; skipping verification"
 fi
+
+# Only self-destruct once everything worked, so a failed run can be retried.
+rm -f -- "$0"
+note "removed setup.sh"
 
 if $FRESH_GIT; then
     rm -rf .git
@@ -189,4 +208,5 @@ echo
 echo "Done. Your app is ready:"
 echo "  cargo run"
 echo
-echo "Start editing src/main.rs."
+echo "Start editing src/main.rs. CHEATSHEET.md has copy-paste patterns for"
+echo "input, layouts, widgets, async work, and tests."
