@@ -16,6 +16,8 @@ Most TUI starters either leave you wiring every terminal detail yourself or intr
 
 ## Quick Start
 
+Click **Use this template** on GitHub (or clone directly), then run one command:
+
 ```bash
 git clone https://github.com/binbandit/tui-base-framework my-tui-app
 cd my-tui-app
@@ -265,6 +267,7 @@ tui-base-framework/
 ├── examples/            # Self-contained runnable examples
 ├── setup.sh             # One-command project setup
 ├── CHEATSHEET.md        # Copy-paste reference for common tasks
+├── AGENTS.md            # Repo guide for AI coding agents (CLAUDE.md imports it)
 └── Cargo.toml
 ```
 
@@ -276,6 +279,10 @@ The framework lives entirely under `src/tui/` and your app only imports from it 
 2. Pick the example closest to your app and copy it to `src/main.rs` (or just edit the starter that's already there).
 3. Replace the example state and rendering with your domain.
 4. Keep the app loop until you have a reason to own lower-level terminal details — the `src/tui/` folder is yours to modify too.
+
+## Working With AI Coding Agents
+
+The repo ships an `AGENTS.md` (with a `CLAUDE.md` that imports it) so tools like Claude Code, Cursor, and Codex understand the architecture, invariants, and test patterns without exploring first. `setup.sh` trims it down to the app-facing guide, so your generated project keeps working agent docs too.
 
 ## Testing Your Components
 
@@ -351,7 +358,7 @@ If the UI does not redraw after input, make sure the component returns `EventRes
 - `tokio` 1.x with minimal runtime features
 - `anyhow` 1.0 for ergonomic error handling
 
-The minimum supported Rust version is **1.88** (edition 2024), checked in CI. `Cargo.lock` is tracked because this is an application template. New projects get reproducible example builds immediately, then can update dependencies on their own cadence (`cargo update`).
+The minimum supported Rust version is declared as `rust-version` in `Cargo.toml` (currently **1.94**, edition 2024); CI reads it from there and checks it on every push. `Cargo.lock` is tracked because this is an application template. New projects get reproducible example builds immediately, then can update dependencies on their own cadence (`cargo update`).
 
 ## License
 

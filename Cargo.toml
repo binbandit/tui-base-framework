@@ -10,7 +10,7 @@ homepage = "https://github.com/binbandit/tui-base-framework"
 readme = "README.md"
 keywords = ["tui", "terminal", "ratatui", "template", "component"]
 categories = ["command-line-interface", "asynchronous"]
-rust-version = "1.88"
+rust-version = "1.94"
 
 # --- template setup ---------------------------------------------------------
 # Run ./setup.sh <your-app-name> to make this project yours: it renames the
