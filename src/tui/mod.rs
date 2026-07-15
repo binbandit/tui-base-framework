@@ -13,7 +13,7 @@ pub mod terminal;
 pub use app::{App, AppConfig, run, run_with_config};
 pub use component::{Component, Context};
 pub use event::{Event, EventResult};
-pub use terminal::{TerminalConfig, TerminalGuard, TerminalType};
+pub use terminal::{TerminalConfig, TerminalGuard, TerminalType, Viewport};
 
 // Input types every component needs, so app code can import from one place.
 pub use crossterm::event::{

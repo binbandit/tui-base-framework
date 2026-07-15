@@ -10,9 +10,9 @@ Input types (`KeyCode`, `KeyModifiers`, ...) and Ratatui modules (`layout`, `sty
 use anyhow::Result;
 use tui_base_framework::{
     AppConfig, Component, Context, Event, EventResult, Frame, KeyCode, KeyModifiers,
-    MouseButton, MouseEventKind, Rect, TerminalConfig, run, run_with_config,
+    MouseButton, MouseEventKind, Rect, TerminalConfig, Viewport, run, run_with_config,
 };
-use tui_base_framework::layout::{Alignment, Constraint, Layout};
+use tui_base_framework::layout::{Alignment, Constraint, Layout, Position};
 use tui_base_framework::style::{Color, Modifier, Style};
 use tui_base_framework::widgets::{Block, Gauge, List, ListItem, ListState, Paragraph, Tabs};
 ```
@@ -84,15 +84,29 @@ let config = AppConfig {
     tick_rate: Duration::from_millis(100),
     input_poll_rate: Duration::from_millis(25),
     channel_capacity: 512,
-    quit_on_ctrl_c: true,
+    quit_on_ctrl_c: true,   // component sees Ctrl-C first; consume it to override
+    suspend_on_ctrl_z: true, // Ctrl-Z suspends to the shell (Unix)
     terminal: TerminalConfig {
         mouse_capture: true,
         bracketed_paste: true,
         focus_change: false,
+        viewport: Viewport::Fullscreen, // or Viewport::Inline(rows)
     },
 };
 
 run_with_config(component, config)?;
+```
+
+Inline apps — draw in a few rows of the scrollback instead of taking over the screen:
+
+```rust
+let config = AppConfig {
+    terminal: TerminalConfig {
+        viewport: Viewport::Inline(6),
+        ..TerminalConfig::default()
+    },
+    ..AppConfig::default()
+};
 ```
 
 ## Events
@@ -105,11 +119,20 @@ match event {
     Event::Mouse(mouse) => {}
     Event::Paste(text) => {}
     Event::Resize(width, height) => {}
-    Event::Tick => {}
+    Event::Tick(elapsed) => {}
 }
 ```
 
 Return `EventResult::Consumed` when state changed. Return `EventResult::Propagate` for ignored events.
+
+Frame-rate-independent animation — scale by the tick's elapsed time:
+
+```rust
+Event::Tick(elapsed) => {
+    self.percent = (self.percent + elapsed.as_secs_f64() * 25.0) % 100.0;
+    EventResult::Consumed
+}
+```
 
 ## Keyboard
 
@@ -147,11 +170,15 @@ match key.code {
 
 ## Modifiers
 
-Exact-chord bindings:
+Ctrl chords — `is_ctrl` is the shorthand, `is_key_with` matches any exact chord:
 
 ```rust
-if event.is_key_with(KeyCode::Char('s'), KeyModifiers::CONTROL) {
+if event.is_ctrl('s') {
     // Ctrl+S
+}
+
+if event.is_key_with(KeyCode::Char('s'), KeyModifiers::CONTROL | KeyModifiers::SHIFT) {
+    // Ctrl+Shift+S
 }
 ```
 
@@ -249,6 +276,24 @@ fn init(&mut self, context: &Context<AppMessage>) {
 }
 ```
 
+## Errors
+
+Recoverable errors are messages — send them and render the failure. Fatal errors go through `Context::fail`, which restores the terminal and returns the error from `run`:
+
+```rust
+fn init(&mut self, context: &Context<AppMessage>) {
+    let context = context.clone();
+
+    tokio::spawn(async move {
+        if let Err(error) = load_required_config().await {
+            context.fail(error); // run() returns Err(error)
+        }
+    });
+}
+```
+
+In tests, assert with `context.take_error()`.
+
 ## Layouts
 
 ### Header / Body / Footer
@@ -317,17 +362,20 @@ let widget = Tabs::new(["Home", "Settings", "About"])
 
 ## Text Input
 
+`Event::char` returns the typed character and ignores Ctrl/Alt chords, so shortcuts keep working:
+
 ```rust
+if let Some(c) = event.char() {
+    self.input.push(c);
+    return EventResult::Consumed;
+}
+
 match event {
     Event::Paste(text) => {
         self.input.push_str(&text);
         EventResult::Consumed
     }
     Event::Key(key) => match key.code {
-        KeyCode::Char(c) => {
-            self.input.push(c);
-            EventResult::Consumed
-        }
         KeyCode::Backspace => {
             self.input.pop();
             EventResult::Consumed
@@ -341,6 +389,14 @@ match event {
     _ => EventResult::Propagate,
 }
 ```
+
+Show the real terminal cursor at the insertion point (in `render`; the cursor is visible only on frames that set a position):
+
+```rust
+frame.set_cursor_position(Position::new(area.x + 1 + typed_width, area.y + 1));
+```
+
+See `examples/text_input.rs` for the full pattern including display-width measurement.
 
 ## Composing Components
 
@@ -362,6 +418,29 @@ fn handle_event(&mut self, event: Event, context: &Context<Msg>) -> EventResult 
 ```
 
 See `examples/focus.rs` for the full pattern including focus highlighting.
+
+## Screens
+
+Screens are components sharing the app's message type; the root routes to the active one and handles navigation messages:
+
+```rust
+fn active_mut(&mut self) -> &mut dyn Component<Message = Msg> {
+    match self.active {
+        ScreenId::Home => &mut self.home,
+        ScreenId::Settings => &mut self.settings,
+    }
+}
+
+fn update(&mut self, message: Msg, _context: &Context<Msg>) {
+    match message {
+        Msg::OpenSettings => self.active = ScreenId::Settings,
+        Msg::Back => self.active = ScreenId::Home,
+        // forward the rest: self.active_mut().update(message, _context)
+    }
+}
+```
+
+Reusable widgets stay message-free — plain structs that take `&Event` and report whether they consumed it — so one widget serves every screen. See `examples/screens.rs` for both patterns in a working app.
 
 ## Testing
 

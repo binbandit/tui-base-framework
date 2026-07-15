@@ -4,12 +4,12 @@ use crate::tui::component::{Component, Context};
 use crate::tui::event::Event;
 use crate::tui::terminal::{TerminalConfig, TerminalGuard};
 use anyhow::{Context as AnyhowContext, Result};
-use crossterm::event::{self, KeyCode, KeyModifiers};
+use crossterm::event;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -54,8 +54,14 @@ pub struct AppConfig {
     pub input_poll_rate: Duration,
     /// Capacity of the event and message channels.
     pub channel_capacity: usize,
-    /// Exit the app loop on Ctrl-C. Disable to handle it yourself.
+    /// Exit the app loop on Ctrl-C. The component sees the key press first:
+    /// if it consumes the event (say, to ask for confirmation), the app keeps
+    /// running. Disable to handle Ctrl-C entirely yourself.
     pub quit_on_ctrl_c: bool,
+    /// Suspend to the shell on Ctrl-Z and take the terminal back on resume
+    /// (`fg`). As with Ctrl-C, the component sees the key press first. Unix
+    /// only — on Windows the key reaches the component like any other.
+    pub suspend_on_ctrl_z: bool,
     /// Terminal features to enable (mouse capture, bracketed paste, ...).
     pub terminal: TerminalConfig,
 }
@@ -67,6 +73,7 @@ impl Default for AppConfig {
             input_poll_rate: Duration::from_millis(50),
             channel_capacity: 256,
             quit_on_ctrl_c: true,
+            suspend_on_ctrl_z: true,
             terminal: TerminalConfig::default(),
         }
     }
@@ -133,10 +140,11 @@ where
     }
 
     /// Runs the app loop until the component quits, Ctrl-C is pressed (when
-    /// enabled), or an input error occurs.
+    /// enabled), [`Context::fail`] reports an error, or an input error
+    /// occurs.
     pub async fn run(&mut self) -> Result<()> {
         self.should_quit = false;
-        self.context.reset_quit();
+        self.context.reset();
 
         let (event_tx, mut event_rx) = mpsc::channel(self.config.channel_capacity());
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -154,7 +162,14 @@ where
         input_handle.abort();
         tick_handle.abort();
 
-        result
+        result?;
+
+        // An error reported through `Context::fail` (from a handler or a
+        // background task) surfaces as the run's result.
+        match self.context.take_error() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     async fn render_loop(&mut self, event_rx: &mut mpsc::Receiver<RuntimeEvent>) -> Result<()> {
@@ -241,8 +256,7 @@ where
         context: &Context<C::Message>,
         needs_render: &mut bool,
     ) -> Result<()> {
-        self.handle_event(event?, context, needs_render);
-        Ok(())
+        self.handle_event(event?, context, needs_render)
     }
 
     fn handle_event(
@@ -250,16 +264,46 @@ where
         event: Event,
         context: &Context<C::Message>,
         needs_render: &mut bool,
-    ) {
-        if self.config.quit_on_ctrl_c && is_ctrl_c(&event) {
-            self.should_quit = true;
-            return;
+    ) -> Result<()> {
+        let resized = matches!(event, Event::Resize(_, _));
+        let ctrl_c = event.is_ctrl('c');
+        #[cfg(unix)]
+        let ctrl_z = event.is_ctrl('z');
+
+        let result = self.component.handle_event(event, context);
+        *needs_render |= resized || result.is_consumed();
+
+        // The component gets first refusal on Ctrl-C and Ctrl-Z: consuming
+        // the event overrides the default (e.g. to confirm before quitting).
+        if result.is_consumed() {
+            return Ok(());
         }
 
-        let redraw_for_terminal_change = matches!(event, Event::Resize(_, _));
-        let result = self.component.handle_event(event, context);
+        if self.config.quit_on_ctrl_c && ctrl_c {
+            self.should_quit = true;
+            return Ok(());
+        }
 
-        *needs_render |= redraw_for_terminal_change || result.is_consumed();
+        #[cfg(unix)]
+        if self.config.suspend_on_ctrl_z && ctrl_z {
+            self.suspend()?;
+            *needs_render = true;
+        }
+
+        Ok(())
+    }
+
+    /// Hands the terminal back to the shell and stops the process until it
+    /// is resumed (e.g. `fg`), then takes the terminal over again.
+    #[cfg(unix)]
+    fn suspend(&mut self) -> Result<()> {
+        self.terminal_guard.suspend();
+
+        // The whole process stops inside `raise` and continues from here
+        // once the shell resumes it.
+        signal_hook::low_level::raise(signal_hook::consts::SIGTSTP).context("raise SIGTSTP")?;
+
+        self.terminal_guard.resume()
     }
 
     fn handle_message(
@@ -323,25 +367,22 @@ async fn tick_loop(event_tx: mpsc::Sender<RuntimeEvent>, tick_rate: Duration) {
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     interval.tick().await;
 
+    let mut last_delivered = Instant::now();
+
     loop {
         interval.tick().await;
 
         // Drop the tick instead of queueing it when the UI is busy, so stale
-        // animation ticks never pile up into delayed redraws.
-        match event_tx.try_send(Ok(Event::Tick)) {
-            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+        // animation ticks never pile up into delayed redraws. Elapsed time
+        // keeps accruing until a tick is actually delivered, so animations
+        // scaled by it stay wall-clock accurate across dropped ticks.
+        let now = Instant::now();
+        match event_tx.try_send(Ok(Event::Tick(now - last_delivered))) {
+            Ok(()) => last_delivered = now,
+            Err(mpsc::error::TrySendError::Full(_)) => {}
             Err(mpsc::error::TrySendError::Closed(_)) => break,
         }
     }
-}
-
-fn is_ctrl_c(event: &Event) -> bool {
-    matches!(
-        event,
-        Event::Key(key)
-            if key.code == KeyCode::Char('c')
-                && key.modifiers.contains(KeyModifiers::CONTROL)
-    )
 }
 
 fn non_zero_duration(value: Duration, fallback: Duration) -> Duration {

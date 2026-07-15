@@ -4,7 +4,7 @@
 use crate::tui::event::{Event, EventResult};
 use ratatui::{Frame, layout::Rect};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::{Notify, mpsc};
@@ -12,14 +12,16 @@ use tokio::sync::{Notify, mpsc};
 /// Handle a component uses to talk back to the app loop.
 ///
 /// A `Context` is cheap to clone and safe to move into background tasks. Use
-/// [`Context::sender`] to report results back to the UI from async work and
-/// [`Context::quit`] to stop the app.
+/// [`Context::sender`] to report results back to the UI from async work,
+/// [`Context::quit`] to stop the app, and [`Context::fail`] to stop it with
+/// an error.
 ///
 /// `M` is the component's [`Component::Message`] type.
 pub struct Context<M> {
     sender: mpsc::Sender<M>,
     quit_requested: Arc<AtomicBool>,
     quit_notify: Arc<Notify>,
+    error: Arc<Mutex<Option<anyhow::Error>>>,
 }
 
 // Manual impl: `Context<M>` is clonable regardless of whether `M` is.
@@ -29,6 +31,7 @@ impl<M> Clone for Context<M> {
             sender: self.sender.clone(),
             quit_requested: Arc::clone(&self.quit_requested),
             quit_notify: Arc::clone(&self.quit_notify),
+            error: Arc::clone(&self.error),
         }
     }
 }
@@ -39,6 +42,7 @@ impl<M> Context<M> {
             sender,
             quit_requested: Arc::new(AtomicBool::new(false)),
             quit_notify: Arc::new(Notify::new()),
+            error: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -76,6 +80,37 @@ impl<M> Context<M> {
         self.quit_requested.load(Ordering::Relaxed)
     }
 
+    /// Reports a fatal error and quits: the terminal is restored and the
+    /// error is returned from [`run`](crate::tui::run) / `App::run`.
+    ///
+    /// Safe to call from event handlers, `update`, or background tasks. The
+    /// first error wins; later ones are dropped. For errors the app can
+    /// recover from, prefer sending a message and rendering the failure
+    /// instead.
+    pub fn fail(&self, error: impl Into<anyhow::Error>) {
+        // A poisoned lock only means another thread panicked mid-`fail`;
+        // the slot is still valid, so keep going rather than lose the error.
+        let mut slot = self
+            .error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slot.get_or_insert_with(|| error.into());
+        drop(slot);
+
+        self.quit();
+    }
+
+    /// Removes and returns the error stored by [`Context::fail`], if any.
+    ///
+    /// The app loop takes it internally to return from `run`; in unit tests,
+    /// use it to assert that a handler reported failure.
+    pub fn take_error(&self) -> Option<anyhow::Error> {
+        self.error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
     /// Creates a context for unit-testing components without a terminal,
     /// plus the receiving end of its message channel.
     ///
@@ -95,8 +130,10 @@ impl<M> Context<M> {
         (Self::new(sender), receiver)
     }
 
-    pub(crate) fn reset_quit(&self) {
+    /// Clears quit and error state so `App::run` can be called again.
+    pub(crate) fn reset(&self) {
         self.quit_requested.store(false, Ordering::Relaxed);
+        self.take_error();
     }
 
     /// Resolves once [`Context::quit`] has been called.
@@ -129,6 +166,11 @@ pub trait Component: Send {
     /// Takes `&mut self` so stateful widgets (`ListState`, `TableState`,
     /// scroll offsets) work without interior mutability. Avoid doing real
     /// work here; mutate state in `handle_event`/`update` instead.
+    ///
+    /// To show the real terminal cursor (for text input), call
+    /// `frame.set_cursor_position(..)`: the cursor is visible on frames that
+    /// set a position and hidden on frames that don't. See
+    /// `examples/text_input.rs`.
     fn render(&mut self, frame: &mut Frame, area: Rect);
 
     /// Reacts to a terminal event or tick.
@@ -204,5 +246,18 @@ mod tests {
         context.try_send(42_u32).expect("send message");
 
         assert_eq!(receiver.try_recv(), Ok(42));
+    }
+
+    #[test]
+    fn fail_stores_the_first_error_and_quits() {
+        let (context, _messages) = Context::<()>::test();
+
+        context.fail(std::io::Error::other("disk on fire"));
+        context.fail(std::io::Error::other("second failure"));
+
+        assert!(context.quit_requested());
+        let error = context.take_error().expect("error stored");
+        assert_eq!(error.to_string(), "disk on fire");
+        assert!(context.take_error().is_none(), "take_error consumes");
     }
 }

@@ -25,6 +25,11 @@ crossterm = "0.29"
 tokio = { version = "1.52", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
 anyhow = "1.0"
 
+# Ctrl-Z suspend needs to raise SIGTSTP; there is no way to do that from std
+# without `unsafe`, which this crate forbids.
+[target.'cfg(unix)'.dependencies]
+signal-hook = { version = "0.3", default-features = false }
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

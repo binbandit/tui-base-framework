@@ -34,6 +34,8 @@ cargo run
 
 `--app-only` is the right choice when you're building an application: it folds the framework into your binary as a plain `src/tui/` module — no library target, nothing published, just your app. The script verifies the result with `cargo check` and deletes itself when done. (`--no-examples`, `--fresh-git`, and `--yes` for non-interactive use are also available; run `./setup.sh --help`.)
 
+On Windows, run `setup.sh` from Git Bash (it ships with Git for Windows) or WSL. The apps themselves build and run natively on Windows — CI checks every push there too.
+
 `cargo run` launches a small starter app whose code lives in `src/main.rs`, ready to edit. Or start from an example — every example is a single self-contained file:
 
 ```bash
@@ -125,11 +127,27 @@ Return `EventResult::Consumed` when an event changed state and should trigger a 
 
 `render` takes `&mut self`, so stateful Ratatui widgets (`ListState`, `TableState`, scroll offsets) live directly in your component — see `examples/list_selector.rs`.
 
-For one-key bindings, `Event::is_key` collapses the match boilerplate:
+For one-key bindings, `Event::is_key` collapses the match boilerplate, and
+`Event::is_ctrl` covers the most common chord:
 
 ```rust
 if event.is_key(KeyCode::Char('q')) || event.is_key(KeyCode::Esc) {
     context.quit();
+    return EventResult::Consumed;
+}
+
+if event.is_ctrl('s') {
+    self.save();
+    return EventResult::Consumed;
+}
+```
+
+For text input, `Event::char` returns the typed character and ignores
+Ctrl/Alt chords, so an input field never swallows keyboard shortcuts:
+
+```rust
+if let Some(c) = event.char() {
+    self.input.push(c);
     return EventResult::Consumed;
 }
 ```
@@ -199,11 +217,46 @@ pub enum Event {
     Mouse(MouseEvent),
     Paste(String),
     Resize(u16, u16),
-    Tick,
+    Tick(Duration),
 }
 ```
 
-`Tick` fires every 250ms by default. Change it through `AppConfig` when you need smoother animation or less frequent polling.
+`Tick` fires every 250ms by default (change it through `AppConfig`) and carries the time elapsed since the previous tick. Scale animations by it and they stay wall-clock accurate at any tick rate — ticks are dropped rather than queued while the UI is busy, so the elapsed time can span more than one interval:
+
+```rust
+Event::Tick(elapsed) => {
+    self.percent += elapsed.as_secs_f64() * FILL_RATE;
+    EventResult::Consumed
+}
+```
+
+### The Cursor
+
+The terminal cursor is hidden by default. To show it — the natural thing for text input — set its position during `render`; it is visible on frames that set a position and hidden on frames that don't:
+
+```rust
+fn render(&mut self, frame: &mut Frame, area: Rect) {
+    // ...draw the input field...
+    frame.set_cursor_position(Position::new(area.x + 1 + typed_width, area.y + 1));
+}
+```
+
+See `examples/text_input.rs` for a complete input field with a live cursor.
+
+### Errors
+
+Recoverable errors are ordinary data: send them as a message and render the failure. For fatal errors, `Context::fail` stops the app, restores the terminal, and returns the error from `run`:
+
+```rust
+let context = context.clone();
+tokio::spawn(async move {
+    if let Err(error) = sync_database().await {
+        context.fail(error); // run() returns Err(error) after cleanup
+    }
+});
+```
+
+Components stay infallible by design — `handle_event` and `update` don't return `Result` — so the trait stays small and the common path stays clean.
 
 ## Configuration
 
@@ -211,17 +264,19 @@ Use `run_with_config` (or `App::with_config`) when you need to tune runtime beha
 
 ```rust
 use std::time::Duration;
-use tui_base_framework::{run_with_config, AppConfig, TerminalConfig};
+use tui_base_framework::{run_with_config, AppConfig, TerminalConfig, Viewport};
 
 let config = AppConfig {
     tick_rate: Duration::from_millis(100),
     input_poll_rate: Duration::from_millis(25),
     channel_capacity: 512,
     quit_on_ctrl_c: true,
+    suspend_on_ctrl_z: true,
     terminal: TerminalConfig {
         mouse_capture: true,
         bracketed_paste: true,
         focus_change: true,
+        viewport: Viewport::Fullscreen,
     },
 };
 
@@ -229,6 +284,25 @@ run_with_config(component, config)?;
 ```
 
 Mouse capture and focus change are opt-in because they change normal terminal behavior. Bracketed paste is enabled by default so paste input arrives as a single `Event::Paste(String)`.
+
+### Ctrl-C, Ctrl-Z, and Suspending
+
+By default the app quits on Ctrl-C and suspends to the shell on Ctrl-Z (resuming cleanly on `fg` — Unix only; on Windows Ctrl-Z reaches the component like any other key). Your component always sees the key press first: consume it to override the default, e.g. to show a "really quit?" confirmation on Ctrl-C. Set `quit_on_ctrl_c: false` / `suspend_on_ctrl_z: false` to take over entirely.
+
+The same primitives are public: if you own the terminal directly through `TerminalGuard` (instead of `run`), `suspend()` / `resume()` hand the terminal to a subprocess (`$EDITOR`, a pager) and take it back with a full repaint.
+
+### Inline Apps
+
+`Viewport::Inline(height)` draws the UI in `height` rows of the normal scrollback instead of taking over the screen — the right shape for progress displays and prompt-style tools. Output printed before the app ran stays visible, and the final frame stays in the scrollback after exit, with the shell prompt continuing below it.
+
+```rust
+terminal: TerminalConfig {
+    viewport: Viewport::Inline(6),
+    ..TerminalConfig::default()
+},
+```
+
+Inline setup locates the viewport by querying the cursor position, so it needs a real interactive terminal (not a pipe or CI).
 
 ## Examples
 
@@ -238,18 +312,48 @@ Each example is one self-contained file you can read top to bottom and copy over
 | --- | --- |
 | `hello_world` | Basic rendering and quit handling |
 | `counter` | Mutable state and keyboard input |
-| `text_input` | Character input, backspace, enter, paste |
+| `text_input` | Character input with a real terminal cursor, paste handling |
 | `list_selector` | Stateful `List` widget with `ListState` navigation |
 | `layout_demo` | Nested Ratatui layouts |
 | `tabs` | View switching |
-| `progress` | Tick-driven updates and a custom tick rate |
+| `progress` | Tick-driven animation scaled by elapsed time |
+| `inline` | Inline viewport: a progress bar living in the scrollback |
 | `async_task` | Background Tokio task reporting progress via typed messages |
 | `focus` | Composing components: parent routes events to the focused child |
+| `screens` | Multi-screen navigation: a router, screens as components, reusable widgets |
 | `mouse` | Mouse capture: click, drag, and scroll handling |
 
 ```bash
 cargo run --example async_task
 ```
+
+## Growing to Multiple Screens
+
+Real apps outgrow one component. The framework adds no screen manager or widget registry for this — two plain-Rust patterns cover it, demonstrated end to end in `examples/screens.rs`:
+
+**Screens are components.** Each screen implements `Component` with the app's message type and owns its own state. The root owns every screen and routes `render`/`handle_event` to the active one — that router is a match statement:
+
+```rust
+fn active_mut(&mut self) -> &mut dyn Component<Message = Msg> {
+    match self.active {
+        ScreenId::Home => &mut self.home,
+        ScreenId::Editor => &mut self.editor,
+    }
+}
+```
+
+Navigation is just a message: a screen sends `Msg::OpenSettings` through its `Context`, and the root's `update` switches the active screen and moves data between screens. No screen knows any other screen exists, so screens stay independently testable. (A `Vec<Box<dyn Component<Message = Msg>>>` gives you a navigation stack the same way.)
+
+**Reusable widgets are plain structs**, not `Component`s. A widget that never touches messages — it takes `&Event`, reports whether it consumed it, and draws itself — plugs into any screen of any app, regardless of message type:
+
+```rust
+impl TextField {
+    fn handle_event(&mut self, event: &Event) -> bool { /* consumed? */ }
+    fn render(&self, frame: &mut Frame, area: Rect) { /* draw */ }
+}
+```
+
+Keep `Component` for things that live on the app's message bus (screens, panes with async work); keep leaf widgets message-free and share them everywhere. `examples/focus.rs` shows the middle ground — child components composed inside one screen with focus routing.
 
 ## Template Structure
 
@@ -323,7 +427,7 @@ The runtime is built to be efficient by default:
 - Blocking terminal input is isolated in a blocking task, so it does not park Tokio worker threads.
 - Messages are statically typed — no boxing or runtime downcasts on the message path.
 - The app is generic over your component type, avoiding heap allocation and dynamic dispatch unless you box a component yourself.
-- Stale animation ticks are dropped when the UI is busy, so background ticks do not build up into delayed redraws.
+- Stale animation ticks are dropped when the UI is busy, so background ticks do not build up into delayed redraws — and `Event::Tick` carries the real elapsed time, so animations stay accurate across drops.
 - Key release events are filtered before they reach components, avoiding double-handling on terminals that emit enhanced keyboard events.
 - Tokio and Ratatui are built with only the features this template needs.
 - Release builds use thin LTO, one codegen unit, and stripped symbols.
@@ -357,6 +461,7 @@ If the UI does not redraw after input, make sure the component returns `EventRes
 - `crossterm` 0.29 for terminal input/control
 - `tokio` 1.x with minimal runtime features
 - `anyhow` 1.0 for ergonomic error handling
+- `signal-hook` 0.3 (Unix only) to raise SIGTSTP for Ctrl-Z suspend without `unsafe`
 
 The minimum supported Rust version is declared as `rust-version` in `Cargo.toml` (currently **1.94**, edition 2024); CI reads it from there and checks it on every push. `Cargo.lock` is tracked because this is an application template. New projects get reproducible example builds immediately, then can update dependencies on their own cadence (`cargo update`).
 

@@ -3,6 +3,7 @@
 //! [`Component::handle_event`]: crate::tui::Component::handle_event
 
 use crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use std::time::Duration;
 
 /// A terminal event or timer tick.
 #[derive(Debug, Clone)]
@@ -19,8 +20,11 @@ pub enum Event {
     Paste(String),
     /// The terminal was resized to (width, height).
     Resize(u16, u16),
-    /// Fires every `AppConfig::tick_rate`; drive animations from this.
-    Tick,
+    /// Fires every `AppConfig::tick_rate`, carrying the time actually elapsed
+    /// since the previous tick. Scale animations by it — ticks are dropped
+    /// (not queued) while the UI is busy, so the elapsed time can span more
+    /// than one tick interval.
+    Tick(Duration),
 }
 
 impl Event {
@@ -64,6 +68,47 @@ impl Event {
     pub fn is_key_with(&self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         matches!(self, Self::Key(key) if key.code == code && key.modifiers == modifiers)
     }
+
+    /// Returns `true` if this event is a press of Ctrl+`c` — shorthand for
+    /// the most common chord:
+    ///
+    /// ```ignore
+    /// if event.is_ctrl('s') {
+    ///     self.save();
+    ///     return EventResult::Consumed;
+    /// }
+    /// ```
+    pub fn is_ctrl(&self, c: char) -> bool {
+        self.is_key_with(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    /// Returns the character this key press would type, if any.
+    ///
+    /// `None` for non-key events and for chords (Ctrl/Alt/Super/Meta), so
+    /// text input built on this never swallows keyboard shortcuts. Shifted
+    /// characters are included — they arrive already uppercased/symbolized.
+    ///
+    /// ```ignore
+    /// if let Some(c) = event.char() {
+    ///     self.input.push(c);
+    ///     return EventResult::Consumed;
+    /// }
+    /// ```
+    pub fn char(&self) -> Option<char> {
+        let chord = KeyModifiers::CONTROL
+            | KeyModifiers::ALT
+            | KeyModifiers::SUPER
+            | KeyModifiers::META
+            | KeyModifiers::HYPER;
+
+        match self {
+            Self::Key(key) if !key.modifiers.intersects(chord) => match key.code {
+                KeyCode::Char(c) => Some(c),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 impl From<CrosstermEvent> for Event {
@@ -99,7 +144,12 @@ impl EventResult {
 #[cfg(test)]
 mod tests {
     use super::Event;
-    use crossterm::event::{KeyCode, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::time::Duration;
+
+    fn chord(c: char, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), modifiers))
+    }
 
     #[test]
     fn is_key_matches_code_regardless_of_state() {
@@ -107,7 +157,7 @@ mod tests {
 
         assert!(event.is_key(KeyCode::Char('q')));
         assert!(!event.is_key(KeyCode::Esc));
-        assert!(!Event::Tick.is_key(KeyCode::Char('q')));
+        assert!(!Event::Tick(Duration::ZERO).is_key(KeyCode::Char('q')));
     }
 
     #[test]
@@ -116,5 +166,22 @@ mod tests {
 
         assert!(plain.is_key_with(KeyCode::Char('s'), KeyModifiers::NONE));
         assert!(!plain.is_key_with(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn is_ctrl_matches_only_the_control_chord() {
+        assert!(chord('c', KeyModifiers::CONTROL).is_ctrl('c'));
+        assert!(!Event::key_press(KeyCode::Char('c')).is_ctrl('c'));
+        assert!(!chord('c', KeyModifiers::CONTROL | KeyModifiers::ALT).is_ctrl('c'));
+    }
+
+    #[test]
+    fn char_returns_typed_characters_but_not_chords() {
+        assert_eq!(Event::key_press(KeyCode::Char('a')).char(), Some('a'));
+        assert_eq!(chord('A', KeyModifiers::SHIFT).char(), Some('A'));
+        assert_eq!(chord('c', KeyModifiers::CONTROL).char(), None);
+        assert_eq!(chord('x', KeyModifiers::ALT).char(), None);
+        assert_eq!(Event::key_press(KeyCode::Backspace).char(), None);
+        assert_eq!(Event::Paste("hi".into()).char(), None);
     }
 }

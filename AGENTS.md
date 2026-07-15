@@ -107,14 +107,26 @@ never block inside `handle_event` or `render`.
 Key behaviors to remember when editing or debugging:
 
 - `Context::quit()` latches and wakes the loop; it can't be lost even when channels
-  are full.
+  are full. `Context::fail(error)` does the same and makes `run` return the error.
 - Key **release** events are filtered out before components see them; `Event::Key` is
   always a press.
 - Stale `Tick` events are dropped when the UI is busy rather than queued.
+  `Event::Tick(elapsed)` carries the real time since the previous delivered tick, so
+  elapsed keeps accruing across drops.
+- The component gets **first refusal** on Ctrl-C (quit) and Ctrl-Z (suspend): the
+  defaults run only when `handle_event` returns `Propagate`. Ctrl-Z suspend raises
+  SIGTSTP via `signal-hook` (Unix only; the flag is inert on Windows).
 - `TerminalGuard` restores the terminal on drop **and** via a panic hook, so panics
   print readably. Don't add early exits that bypass it (e.g. `std::process::exit`).
+  Its `suspend()`/`resume()` are the primitives behind Ctrl-Z; `resume()` rebuilds
+  the ratatui terminal to re-anchor inline viewports and force a full repaint.
 - Mouse capture and focus events are opt-in via `TerminalConfig`; bracketed paste is
-  on by default.
+  on by default. `TerminalConfig::viewport` selects fullscreen (alternate screen) or
+  `Viewport::Inline(rows)` (draws in the scrollback; setup queries the cursor
+  position through stdin, so inline needs a real terminal).
+- Composition patterns live in examples, not the framework: `focus.rs` for child
+  components inside one screen, `screens.rs` for a screen router and message-free
+  reusable widgets.
 
 ## Testing patterns
 

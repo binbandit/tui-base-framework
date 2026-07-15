@@ -9,8 +9,14 @@ env:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        # Windows is in the matrix because the framework cfg-gates Unix-only
+        # code (Ctrl-Z suspend); this catches breakage on both sides.
+        os: [ubuntu-latest, windows-latest]
 
     steps:
       - name: Checkout
@@ -43,6 +49,7 @@ jobs:
         run: cargo doc --no-deps
 
       - name: Shellcheck setup script
+        if: runner.os == 'Linux'
         run: shellcheck setup.sh
 
   msrv:

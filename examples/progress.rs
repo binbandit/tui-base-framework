@@ -1,7 +1,10 @@
 //! Tick-driven animation with a progress gauge.
 //!
-//! `Event::Tick` fires at `AppConfig::tick_rate` (250ms by default); this
-//! example speeds it up for a smoother animation.
+//! `Event::Tick` fires at `AppConfig::tick_rate` (250ms by default; this
+//! example speeds it up for a smoother animation) and carries the time
+//! elapsed since the previous tick. Scaling movement by that duration keeps
+//! animation speed independent of the tick rate — try changing `tick_rate`
+//! below and the bar still fills at the same pace.
 //!
 //! Run with: `cargo run --example progress`
 
@@ -14,8 +17,11 @@ use tui_base_framework::{
     AppConfig, Component, Context, Event, EventResult, Frame, KeyCode, Rect, run_with_config,
 };
 
+/// How fast the bar fills, in percent per second.
+const FILL_RATE: f64 = 25.0;
+
 struct ProgressDemo {
-    progress: u16,
+    percent: f64,
     paused: bool,
 }
 
@@ -42,15 +48,15 @@ impl Component for ProgressDemo {
             Gauge::default()
                 .block(Block::bordered().title("Progress"))
                 .gauge_style(Style::default().fg(Color::Green))
-                .percent(self.progress),
+                .percent(self.percent as u16),
             bar,
         );
 
         let status = if self.paused { "PAUSED" } else { "RUNNING" };
         frame.render_widget(
             Paragraph::new(format!(
-                "Status: {}\nProgress: {}%\n\nThe progress bar advances on each tick\n(simulating a task).",
-                status, self.progress
+                "Status: {}\nProgress: {:.0}%\n\nThe bar advances by the time elapsed between\nticks ({FILL_RATE}%/s), independent of tick rate.",
+                status, self.percent
             ))
             .block(Block::bordered().title("Info")),
             info,
@@ -66,8 +72,8 @@ impl Component for ProgressDemo {
 
     fn handle_event(&mut self, event: Event, context: &Context<Self::Message>) -> EventResult {
         match event {
-            Event::Tick if !self.paused => {
-                self.progress = (self.progress + 1) % 101;
+            Event::Tick(elapsed) if !self.paused => {
+                self.percent = (self.percent + elapsed.as_secs_f64() * FILL_RATE) % 100.0;
                 EventResult::Consumed
             }
             Event::Key(key) => match key.code {
@@ -76,7 +82,7 @@ impl Component for ProgressDemo {
                     EventResult::Consumed
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
-                    self.progress = 0;
+                    self.percent = 0.0;
                     self.paused = false;
                     EventResult::Consumed
                 }
@@ -98,7 +104,7 @@ fn main() -> Result<()> {
     };
 
     let component = ProgressDemo {
-        progress: 0,
+        percent: 0.0,
         paused: false,
     };
 
