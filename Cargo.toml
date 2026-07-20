@@ -28,7 +28,7 @@ anyhow = "1.0"
 # Ctrl-Z suspend needs to raise SIGTSTP; there is no way to do that from std
 # without `unsafe`, which this crate forbids.
 [target.'cfg(unix)'.dependencies]
-signal-hook = { version = "0.3", default-features = false }
+signal-hook = { version = "0.4", default-features = false }
 
 [profile.release]
 codegen-units = 1
