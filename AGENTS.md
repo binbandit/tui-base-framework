@@ -34,8 +34,8 @@ This is a **template repository**, not a published library. People clone it, run
 5. **`src/main.rs` must keep at least one top-level `use ` line.** `--app-only`
    inserts `mod tui;` immediately before the first line matching `^use `.
 6. **Marker blocks are load-bearing.** The `# --- template setup ---` comment block in
-   `Cargo.toml` and the `<!-- template-only:start/end -->` blocks in this file are
-   deleted by `setup.sh`. Keep template-specific prose inside them; keep everything a
+   `Cargo.toml` and the `<!-- template-only:start/end -->` blocks in this file and the
+   `# template-only:start/end` blocks in CI are deleted by `setup.sh`. Keep template-specific prose inside them; keep everything a
    generated app still needs outside them.
 7. **Examples are single self-contained files.** Each `examples/*.rs` contains a
    component plus `main` and works when copied over `src/main.rs`. Adding one means
@@ -55,7 +55,10 @@ cargo test --all-targets
 cargo test --doc
 cargo clippy --all-targets --all-features -- -D warnings
 cargo doc --no-deps
-shellcheck setup.sh
+shellcheck --norc setup.sh scripts/test-setup.sh
+bash scripts/test-setup.sh
+python3 scripts/test-runtime.py # Unix PTY integration tests
+cargo audit --deny warnings
 ```
 
 Plus an MSRV check and a matrix that actually executes `./setup.sh` in both modes on
@@ -96,12 +99,14 @@ examples/            Self-contained runnable examples (optional)
 
 An app is one `Component`: it owns state, draws in `render`, reacts to terminal input
 in `handle_event`, and reacts to typed messages in `update`. The `App` loop (in
-`src/tui/app.rs`) owns the terminal, pumps crossterm input from a blocking task, fires
+`src/tui/app.rs`) owns the terminal, pumps crossterm input from an owned thread, fires
 `Event::Tick` on an interval, and delivers messages sent through `Context`. Rendering
 is event-driven: a redraw happens only when `handle_event` returns
-`EventResult::Consumed`, a message arrives, or the terminal resizes — and queued
-events are drained first so input bursts coalesce into one redraw. Background work is
-plain `tokio::spawn`: move `context.sender()` into the task and `send` a message back;
+`EventResult::Consumed`, a message arrives, or the terminal resizes. Bounded batches
+of queued messages and events coalesce input bursts into one redraw without starving
+rendering or other Tokio tasks. The input thread joins on exit or cancellation;
+ticks come directly from the app interval and never enter a queue. Background work
+is plain `tokio::spawn`: move `context.sender()` into the task and `send` a message back;
 never block inside `handle_event` or `render`.
 
 Key behaviors to remember when editing or debugging:
@@ -109,7 +114,7 @@ Key behaviors to remember when editing or debugging:
 - `Context::quit()` latches and wakes the loop; it can't be lost even when channels
   are full. `Context::fail(error)` does the same and makes `run` return the error.
 - Key **release** events are filtered out before components see them; `Event::Key` is
-  always a press.
+  a press or repeat.
 - Stale `Tick` events are dropped when the UI is busy rather than queued.
   `Event::Tick(elapsed)` carries the real time since the previous delivered tick, so
   elapsed keeps accruing across drops.
@@ -118,6 +123,7 @@ Key behaviors to remember when editing or debugging:
   SIGTSTP via `signal-hook` (Unix only; the flag is inert on Windows).
 - `TerminalGuard` restores the terminal on drop **and** via a panic hook, so panics
   print readably. Don't add early exits that bypass it (e.g. `std::process::exit`).
+  Only one guard may exist at a time; setup and resume failures roll back.
   Its `suspend()`/`resume()` are the primitives behind Ctrl-Z; `resume()` rebuilds
   the ratatui terminal to re-anchor inline viewports and force a full repaint.
 - Mouse capture and focus events are opt-in via `TerminalConfig`; bracketed paste is

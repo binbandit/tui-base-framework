@@ -28,7 +28,25 @@ OLD_IDENT="tui_base_framework"
 err() { printf 'error: %s\n' "$1" >&2; exit 1; }
 note() { printf '  %s\n' "$1"; }
 
-cd "$(dirname "$0")"
+# Resolve the script before changing directories: callers may run it from elsewhere.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+SCRIPT="$SCRIPT_DIR/$(basename "$0")"
+
+# Replace only the file being edited. Backup-suffix editing left nested backups
+# behind and its cleanup could delete a user's unrelated .bak files.
+rewrite() {
+    local file="$1" temporary
+    shift
+    temporary="$(mktemp "${file}.setup.XXXXXX")"
+    cp -p "$file" "$temporary"
+    if "$@" "$file" > "$temporary"; then
+        mv "$temporary" "$file"
+    else
+        rm -f "$temporary"
+        return 1
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -47,7 +65,7 @@ while [ $# -gt 0 ]; do
         --no-examples) NO_EXAMPLES=true ;;
         --fresh-git) FRESH_GIT=true ;;
         --yes|-y) ASSUME_YES=true ;;
-        -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,21p' "$SCRIPT" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) err "unknown option: $1 (see ./setup.sh --help)" ;;
     esac
     shift
@@ -65,6 +83,18 @@ case "$NAME" in
     tui) err "'tui' collides with the framework's internal module name; pick another" ;;
 esac
 IDENT="$(printf '%s' "$NAME" | tr '-' '_')"
+# These names either cannot appear in a Rust 2024 use path or shadow a crate
+# imported by the template. Check before rewriting any files.
+case "$IDENT" in
+    _|as|async|await|break|const|continue|crate|dyn|else|enum|extern|false|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|super|trait|true|type|unsafe|use|where|while|abstract|become|box|do|final|gen|macro|override|priv|try|typeof|unsized|virtual|yield)
+        err "'$NAME' is a reserved Rust identifier; pick another" ;;
+    std|core|alloc|anyhow|crossterm|ratatui|tokio|signal_hook)
+        err "'$NAME' collides with a crate used by the template; pick another" ;;
+esac
+[[ -f Cargo.toml && -f src/main.rs && -d src/tui ]] \
+    || err "run setup from a complete template checkout"
+grep -Eq "^name = \"($OLD_PKG|$NAME)\"$" Cargo.toml \
+    || err "this project was already renamed; retry with its current name"
 
 if ! $ASSUME_YES && ! $APP_ONLY; then
     printf 'Fold the framework into a binary-only app (no lib.rs, no examples)? [y/N] '
@@ -72,19 +102,45 @@ if ! $ASSUME_YES && ! $APP_ONLY; then
     case "$reply" in [yY]*) APP_ONLY=true; NO_EXAMPLES=true ;; esac
 fi
 
+if $APP_ONLY; then
+    grep -q '^use ' src/main.rs \
+        || err "cannot insert 'mod tui;' into src/main.rs (no top-level 'use' line)"
+fi
+
+# Ask and validate before mutating the project. A worktree/submodule has a .git
+# file pointing elsewhere; replacing it would detach it from its parent repo.
+if ! $ASSUME_YES && ! $FRESH_GIT && [ -d .git ]; then
+    printf 'Start a fresh git history? [y/N] '
+    read -r reply
+    case "$reply" in [yY]*) FRESH_GIT=true ;; esac
+fi
+if $FRESH_GIT; then
+    command -v git >/dev/null 2>&1 || err "--fresh-git requires git"
+    [[ ! -f .git && ! -L .git ]] \
+        || err "--fresh-git cannot be used in a linked worktree or submodule"
+    if ! git var GIT_AUTHOR_IDENT >/dev/null 2>&1 \
+        || ! git var GIT_COMMITTER_IDENT >/dev/null 2>&1; then
+        err "--fresh-git requires a configured git author and committer"
+    fi
+fi
+
 echo "Setting up '$NAME'..."
 
 # ---------------------------------------------------------------------------
 # Rename the crate everywhere
 # ---------------------------------------------------------------------------
-find src examples -type f -name '*.rs' \
-    -exec sed -i.bak -e "s/$OLD_IDENT/$IDENT/g" -e "s/$OLD_PKG/$NAME/g" {} + 2>/dev/null || true
-for f in Cargo.toml Cargo.lock ./*.md examples/*.md; do
-    [ -f "$f" ] || continue
-    sed -i.bak -e "s/$OLD_IDENT/$IDENT/g" -e "s/$OLD_PKG/$NAME/g" "$f"
-done
-find src examples . -maxdepth 1 -name '*.bak' -delete 2>/dev/null || true
-rm -f examples/*.bak
+# A retry must not expand a new name that itself contains the template name.
+if grep -q "^name = \"$OLD_PKG\"$" Cargo.toml; then
+    SOURCE_DIRS=(src)
+    [ ! -d examples ] || SOURCE_DIRS+=(examples)
+    while IFS= read -r -d '' file; do
+        rewrite "$file" sed -e "s/$OLD_IDENT/$IDENT/g" -e "s/$OLD_PKG/$NAME/g"
+    done < <(find "${SOURCE_DIRS[@]}" -type f -name '*.rs' -print0)
+    for file in Cargo.toml Cargo.lock ./*.md examples/*.md; do
+        [ -f "$file" ] || continue
+        rewrite "$file" sed -e "s/$OLD_IDENT/$IDENT/g" -e "s/$OLD_PKG/$NAME/g"
+    done
+fi
 note "renamed crate to '$NAME' (module path '$IDENT')"
 
 # ---------------------------------------------------------------------------
@@ -92,34 +148,56 @@ note "renamed crate to '$NAME' (module path '$IDENT')"
 # ---------------------------------------------------------------------------
 GIT_NAME="$(git config user.name 2>/dev/null || true)"
 GIT_EMAIL="$(git config user.email 2>/dev/null || true)"
-if [ -n "$GIT_NAME" ]; then
-    AUTHOR="$GIT_NAME${GIT_EMAIL:+ <$GIT_EMAIL>}"
-    sed -i.bak "s|^authors = .*|authors = [\"$AUTHOR\"]|" Cargo.toml && rm -f Cargo.toml.bak
-    note "set authors to '$AUTHOR' (from git config)"
+AUTHOR="${GIT_NAME:+$GIT_NAME${GIT_EMAIL:+ <$GIT_EMAIL>}}"
+# ENVIRON preserves literal backslashes (awk -v and sed replacements do not).
+# Encode all TOML basic-string escapes, including control characters.
+AUTHOR="$AUTHOR" rewrite Cargo.toml awk '
+    function quoted(value,    i, c, n) {
+        printf "\""
+        for (i = 1; i <= length(value); i++) {
+            c = substr(value, i, 1)
+            if (c == "\\" || c == "\"") printf "\\%s", c
+            else {
+                for (n = 1; n < 32; n++) if (c == sprintf("%c", n)) break
+                if (n < 32 || c == sprintf("%c", 127)) printf "\\u%04x", (n < 32 ? n : 127)
+                else printf "%s", c
+            }
+        }
+        printf "\""
+    }
+    /^authors = / {
+        if (ENVIRON["AUTHOR"] != "") {
+            printf "authors = ["
+            quoted(ENVIRON["AUTHOR"])
+            print "]"
+        }
+        next
+    }
+    { print }
+'
+if [ -n "$AUTHOR" ]; then
+    note "set authors from git config"
 else
-    sed -i.bak '/^authors = /d' Cargo.toml && rm -f Cargo.toml.bak
     note "removed authors (git config has no user.name)"
 fi
 
-sed -i.bak \
+rewrite Cargo.toml sed \
     -e 's|^description = .*|description = "TODO: describe your app"|' \
     -e '/^repository = /d' \
     -e '/^homepage = /d' \
     -e '/^keywords = /d' \
-    -e '/^categories = /d' \
-    Cargo.toml && rm -f Cargo.toml.bak
+    -e '/^categories = /d'
 note "reset description; removed repository/homepage/keywords/categories"
 
 # Drop the template-setup comment block and squeeze leftover blank lines.
-sed -i.bak '/^# --- template setup /,/^# ----*$/d' Cargo.toml && rm -f Cargo.toml.bak
-sed -i.bak '/^$/N;/^\n$/D' Cargo.toml && rm -f Cargo.toml.bak
+rewrite Cargo.toml sed '/^# --- template setup /,/^# ----*$/d'
+rewrite Cargo.toml awk 'NF { blank = 0; print; next } !blank++ { print }'
 
 # Strip template-maintenance sections from the agent docs; the framework guide
 # in the rest of the file still applies to the generated app.
 if [ -f AGENTS.md ]; then
-    sed -i.bak '/<!-- template-only:start -->/,/<!-- template-only:end -->/d' AGENTS.md \
-        && rm -f AGENTS.md.bak
-    sed -i.bak '/^$/N;/^\n$/D' AGENTS.md && rm -f AGENTS.md.bak
+    rewrite AGENTS.md sed '/<!-- template-only:start -->/,/<!-- template-only:end -->/d'
+    rewrite AGENTS.md awk 'NF { blank = 0; print; next } !blank++ { print }'
     note "trimmed AGENTS.md to the app-facing guide"
 fi
 
@@ -130,7 +208,7 @@ if $NO_EXAMPLES; then
     rm -rf examples
     # The backticks below are literal doc-comment text, not command expansion.
     # shellcheck disable=SC2016
-    sed -i.bak '/from `examples\/` over it/d' src/main.rs && rm -f src/main.rs.bak
+    rewrite src/main.rs sed '/from `examples\/` over it/d'
     note "removed examples/"
 fi
 
@@ -142,67 +220,77 @@ if $APP_ONLY; then
 
     # The framework module is self-contained under src/tui/, so the binary
     # adopts it with a `mod tui;` declaration and crate-local imports.
-    find src -type f -name '*.rs' -exec sed -i.bak \
-        -e "s/use $IDENT::/use crate::tui::/g" \
-        -e "s/$IDENT::/crate::tui::/g" {} +
-    find src -name '*.bak' -delete
-    # In a binary crate, framework API your app doesn't use yet would warn as
-    # dead code; allow it on the module until you grow into it. (awk, not sed:
-    # inserting lines before a match is a GNU-sed extension that macOS lacks.)
-    awk '!done && /^use / {
-             print "#[allow(dead_code, unused_imports)]"
-             print "mod tui;"
-             print ""
-             done = 1
-         }
-         { print }' src/main.rs > src/main.rs.new && mv src/main.rs.new src/main.rs
-    grep -q '^mod tui;' src/main.rs \
-        || err "could not insert 'mod tui;' into src/main.rs (no 'use' line found?)"
+    while IFS= read -r -d '' file; do
+        rewrite "$file" sed "s/$IDENT::/crate::tui::/g"
+    done < <(find src -type f -name '*.rs' -print0)
+    # Unused framework API stays available as the app grows. Avoid adding the
+    # module twice when retrying after a failed cargo check.
+    if ! grep -q '^mod tui;' src/main.rs; then
+        rewrite src/main.rs awk '!done && /^use / {
+                 print "#[allow(dead_code, unused_imports)]"
+                 print "mod tui;"
+                 print ""
+                 done = 1
+             }
+             { print }'
+    fi
 
     # Drop the now-stale template note from the module docs.
-    sed -i.bak '/^\/\/!$/,/binary-only project unchanged/d' src/tui/mod.rs \
-        && rm -f src/tui/mod.rs.bak
+    rewrite src/tui/mod.rs sed '/^\/\/! This folder is deliberately self-contained/,/binary-only project unchanged/d'
 
     # Point doc snippets at the new paths.
     for f in ./*.md; do
         [ -f "$f" ] || continue
-        sed -i.bak "s/use $IDENT::/use crate::tui::/g" "$f" && rm -f "$f.bak"
+        rewrite "$f" sed "s/$IDENT::/crate::tui::/g"
     done
     note "converted to a binary-only app (framework lives in src/tui/)"
 fi
 
-# ---------------------------------------------------------------------------
-# Optional: fresh git history
-# ---------------------------------------------------------------------------
-if ! $ASSUME_YES && ! $FRESH_GIT && [ -d .git ]; then
-    printf 'Start a fresh git history? [y/N] '
-    read -r reply
-    case "$reply" in [yY]*) FRESH_GIT=true ;; esac
+# CI for a generated app must not try to run the setup script after it deletes
+# itself. Keep the ordinary Rust checks and remove only marked template checks.
+if [ -f .github/workflows/ci.yml ]; then
+    rewrite .github/workflows/ci.yml sed '/# template-only:start/,/# template-only:end/d'
 fi
+rm -f scripts/test-setup.sh scripts/test-runtime.py
+if [ -d scripts ] && [ -z "$(ls -A scripts)" ]; then rmdir scripts; fi
 
 # ---------------------------------------------------------------------------
 # Verify and finish
 # ---------------------------------------------------------------------------
 if command -v cargo >/dev/null 2>&1; then
     echo "Verifying with 'cargo check'..."
-    cargo fmt --quiet 2>/dev/null || true
+    cargo fmt --all --quiet
     cargo check --all-targets --quiet
     note "cargo check passed"
 else
     note "cargo not found; skipping verification"
 fi
 
-# Only self-destruct once everything worked, so a failed run can be retried.
-rm -f -- "$0"
-note "removed setup.sh"
-
 if $FRESH_GIT; then
+    # Build the replacement history separately. Keep the original .git intact
+    # until the initial commit succeeds (identity, hooks, and signing can fail).
+    NEW_GIT="$(mktemp -d "${TMPDIR:-/tmp}/tui-setup-git.XXXXXX")"
+    trap 'rm -rf "$NEW_GIT"' EXIT
+    git init -q --separate-git-dir="$NEW_GIT/history" "$NEW_GIT/worktree"
+    if [ -n "$GIT_NAME" ]; then
+        git --git-dir="$NEW_GIT/history" config user.name "$GIT_NAME"
+    fi
+    if [ -n "$GIT_EMAIL" ]; then
+        git --git-dir="$NEW_GIT/history" config user.email "$GIT_EMAIL"
+    fi
+    git --git-dir="$NEW_GIT/history" --work-tree="$SCRIPT_DIR" add -A
+    git --git-dir="$NEW_GIT/history" --work-tree="$SCRIPT_DIR" rm --cached --ignore-unmatch -- "$(basename "$SCRIPT")"
+    git --git-dir="$NEW_GIT/history" --work-tree="$SCRIPT_DIR" commit -qm "Initial commit (from tui-base-framework template)"
     rm -rf .git
-    git init -q
-    git add -A
-    git commit -qm "Initial commit (from tui-base-framework template)"
+    mv "$NEW_GIT/history" .git
+    rm -rf "$NEW_GIT"
+    trap - EXIT
     note "started fresh git history"
 fi
+
+# A failed verification keeps the script available for a same-name retry.
+rm -f -- "$SCRIPT"
+note "removed setup.sh"
 
 echo
 echo "Done. Your app is ready:"

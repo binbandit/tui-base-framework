@@ -18,7 +18,7 @@
 use anyhow::Result;
 use tui_base_framework::layout::{Constraint, Layout, Position, Rect};
 use tui_base_framework::style::{Color, Modifier, Style};
-use tui_base_framework::text::Line;
+use tui_base_framework::text::{Line, Span};
 use tui_base_framework::widgets::{Block, List, ListState, Paragraph};
 use tui_base_framework::{Component, Context, Event, EventResult, Frame, KeyCode, run};
 
@@ -72,7 +72,7 @@ impl TextField {
 
         match event {
             Event::Paste(text) => {
-                self.value.push_str(text);
+                self.value.extend(text.chars().filter(|c| !c.is_control()));
                 true
             }
             Event::Key(key) if key.code == KeyCode::Backspace => {
@@ -90,19 +90,14 @@ impl TextField {
             Style::default()
         };
 
-        frame.render_widget(
-            Paragraph::new(self.value.as_str())
-                .block(Block::bordered().title(self.label).border_style(border)),
-            area,
-        );
+        let block = Block::bordered().title(self.label).border_style(border);
+        let inner = block.inner(area);
+        let (visible, column) = visible_input(&self.value, inner.width);
+        frame.render_widget(Paragraph::new(visible).block(block), area);
 
-        // Only the focused field claims the real terminal cursor.
-        if self.focused {
-            let typed = Line::from(self.value.as_str()).width() as u16;
-            frame.set_cursor_position(Position::new(
-                area.x + 1 + typed.min(area.width.saturating_sub(3)),
-                area.y + 1,
-            ));
+        // Only a visible, focused field claims the real terminal cursor.
+        if self.focused && !inner.is_empty() {
+            frame.set_cursor_position(Position::new(inner.x + column, inner.y));
         }
     }
 }
@@ -151,12 +146,20 @@ impl Component for HomeScreen {
 
     fn handle_event(&mut self, event: Event, context: &Context<Msg>) -> EventResult {
         if event.is_key(KeyCode::Up) {
-            self.state.select_previous();
+            self.state
+                .select(self.state.selected().map(|index| index.saturating_sub(1)));
             return EventResult::Consumed;
         }
 
         if event.is_key(KeyCode::Down) {
-            self.state.select_next();
+            self.state
+                .select(self.items.len().checked_sub(1).map(|last| {
+                    self.state
+                        .selected()
+                        .unwrap_or(0)
+                        .saturating_add(1)
+                        .min(last)
+                }));
             return EventResult::Consumed;
         }
 
@@ -328,6 +331,27 @@ fn status_bar(hint: &str) -> Paragraph<'_> {
     Paragraph::new(format!(" {hint}")).style(Style::default().fg(Color::DarkGray))
 }
 
+// Render a suffix rather than a u16 scroll offset: pastes can be much wider
+// than 65,535 columns. Keep graphemes intact and reserve a cell for the cursor.
+fn visible_input(value: &str, width: u16) -> (&str, u16) {
+    let line = Line::from(value);
+    let mut remaining: usize = line
+        .styled_graphemes(Style::default())
+        .map(|grapheme| Span::raw(grapheme.symbol).width())
+        .sum();
+    let available = usize::from(width.saturating_sub(1));
+    let mut start = 0;
+    for grapheme in line.styled_graphemes(Style::default()) {
+        if remaining <= available {
+            break;
+        }
+        remaining -= Span::raw(grapheme.symbol).width();
+        start += grapheme.symbol.len();
+    }
+    let visible = &value[start..];
+    (visible, Line::from(visible).width().min(available) as u16)
+}
+
 fn main() -> Result<()> {
     let items = vec![
         Item {
@@ -356,4 +380,43 @@ fn main() -> Result<()> {
             notes: TextField::new("Notes"),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_input_keeps_the_end_and_graphemes_visible() {
+        let value = format!("{}界e\u{301}END", "a".repeat(70_000));
+        let (visible, cursor) = visible_input(&value, 8);
+        assert_eq!(visible, "a界e\u{301}END");
+        assert_eq!(cursor, 7);
+    }
+
+    #[test]
+    fn edit_uses_valid_selection_without_an_intervening_render() {
+        let (context, mut messages) = Context::test();
+        let mut home = HomeScreen {
+            items: vec![Item {
+                title: "one".into(),
+                notes: String::new(),
+            }],
+            state: ListState::default().with_selected(Some(0)),
+        };
+        for _ in 0..100 {
+            home.handle_event(Event::key_press(KeyCode::Down), &context);
+        }
+        home.handle_event(Event::key_press(KeyCode::Enter), &context);
+        assert!(matches!(messages.try_recv(), Ok(Msg::Edit(0))));
+    }
+
+    #[test]
+    fn text_field_paste_is_single_line_and_shortcuts_propagate() {
+        let mut field = TextField::new("Title");
+        field.focused = true;
+        assert!(field.handle_event(&Event::Paste("a\n界\r\t".into())));
+        assert_eq!(field.value, "a界");
+        assert!(!field.handle_event(&Event::key_press(KeyCode::Tab)));
+    }
 }

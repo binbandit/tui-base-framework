@@ -56,7 +56,7 @@ impl<M> Context<M> {
 
     /// Sends a message to [`Component::update`] without waiting.
     ///
-    /// Fails if the message channel is full. From async code prefer
+    /// Fails if the message channel is full or closed. From async code prefer
     /// `context.sender()` and `send(message).await`, which waits for capacity
     /// instead of dropping the message.
     pub fn try_send(&self, message: M) -> Result<(), mpsc::error::TrySendError<M>> {
@@ -80,8 +80,9 @@ impl<M> Context<M> {
         self.quit_requested.load(Ordering::Relaxed)
     }
 
-    /// Reports a fatal error and quits: the terminal is restored and the
-    /// error is returned from [`run`](crate::tui::run) / `App::run`.
+    /// Reports a fatal error and quits. The error is returned from
+    /// [`run`](crate::tui::run) or `App::run`; the terminal is restored when
+    /// its owning `App` is dropped (automatically by the `run` helper).
     ///
     /// Safe to call from event handlers, `update`, or background tasks. The
     /// first error wins; later ones are dropped. For errors the app can
@@ -157,7 +158,7 @@ pub trait Component: Send {
     /// messages.
     type Message: Send + 'static;
 
-    /// Called once before the first render. A good place to spawn startup
+    /// Called at the start of each `App::run`, before rendering. Spawn startup
     /// tasks with [`Context::sender`].
     fn init(&mut self, _context: &Context<Self::Message>) {}
 

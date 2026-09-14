@@ -12,7 +12,7 @@ pub enum Event {
     FocusGained,
     /// The terminal window lost focus (requires `TerminalConfig::focus_change`).
     FocusLost,
-    /// A key press. Key releases are filtered out by the runtime.
+    /// A key press or repeat. Key releases are filtered out by the runtime.
     Key(KeyEvent),
     /// A mouse event (requires `TerminalConfig::mouse_capture`).
     Mouse(MouseEvent),
@@ -144,11 +144,24 @@ impl EventResult {
 #[cfg(test)]
 mod tests {
     use super::Event;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    };
     use std::time::Duration;
 
     fn chord(c: char, modifiers: KeyModifiers) -> Event {
         Event::Key(KeyEvent::new(KeyCode::Char(c), modifiers))
+    }
+
+    #[test]
+    fn repeated_keys_keep_their_kind_and_match_bindings() {
+        let key =
+            KeyEvent::new_with_kind(KeyCode::Char('x'), KeyModifiers::NONE, KeyEventKind::Repeat);
+        let event = Event::from(CrosstermEvent::Key(key));
+
+        assert_eq!(event.key().unwrap().kind, KeyEventKind::Repeat);
+        assert!(event.is_key(KeyCode::Char('x')));
+        assert_eq!(event.char(), Some('x'));
     }
 
     #[test]
