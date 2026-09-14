@@ -21,9 +21,11 @@ impl ListSelector {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        let items: Vec<String> = items.into_iter().map(Into::into).collect();
+        let selected = (!items.is_empty()).then_some(0);
         Self {
-            items: items.into_iter().map(Into::into).collect(),
-            state: ListState::default().with_selected(Some(0)),
+            items,
+            state: ListState::default().with_selected(selected),
         }
     }
 }
@@ -59,11 +61,19 @@ impl Component for ListSelector {
 
         match key.code {
             KeyCode::Up => {
-                self.state.select_previous();
+                self.state
+                    .select(self.state.selected().map(|index| index.saturating_sub(1)));
                 EventResult::Consumed
             }
             KeyCode::Down => {
-                self.state.select_next();
+                self.state
+                    .select(self.items.len().checked_sub(1).map(|last| {
+                        self.state
+                            .selected()
+                            .unwrap_or(0)
+                            .saturating_add(1)
+                            .min(last)
+                    }));
                 EventResult::Consumed
             }
             KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -85,4 +95,26 @@ fn main() -> Result<()> {
         "C++",
         "Java",
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn navigation_handles_empty_lists_and_batched_input() {
+        let (context, _messages) = Context::test();
+        let mut empty = ListSelector::new(std::iter::empty::<String>());
+        let mut list = ListSelector::new(["one", "two"]);
+        for _ in 0..100 {
+            empty.handle_event(Event::key_press(KeyCode::Down), &context);
+            list.handle_event(Event::key_press(KeyCode::Down), &context);
+        }
+        assert_eq!(empty.state.selected(), None);
+        assert_eq!(list.state.selected(), Some(1));
+        for _ in 0..100 {
+            list.handle_event(Event::key_press(KeyCode::Up), &context);
+        }
+        assert_eq!(list.state.selected(), Some(0));
+    }
 }

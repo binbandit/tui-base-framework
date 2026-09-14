@@ -85,10 +85,17 @@ impl Component for Sidebar {
 
     fn handle_event(&mut self, event: Event, _context: &Context<Self::Message>) -> EventResult {
         if event.is_key(KeyCode::Up) {
-            self.state.select_previous();
+            self.state
+                .select(self.state.selected().map(|index| index.saturating_sub(1)));
             EventResult::Consumed
         } else if event.is_key(KeyCode::Down) {
-            self.state.select_next();
+            self.state.select(TOPICS.len().checked_sub(1).map(|last| {
+                self.state
+                    .selected()
+                    .unwrap_or(0)
+                    .saturating_add(1)
+                    .min(last)
+            }));
             EventResult::Consumed
         } else {
             EventResult::Propagate
@@ -217,4 +224,36 @@ fn main() -> Result<()> {
         },
         focus: Focus::Sidebar,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tui_base_framework::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn navigation_stays_valid_before_rendering() {
+        let (context, _messages) = Context::test();
+        let mut demo = FocusDemo {
+            sidebar: Sidebar {
+                state: ListState::default().with_selected(Some(0)),
+                focused: true,
+            },
+            content: Content {
+                topic: 0,
+                scroll: 0,
+                focused: false,
+            },
+            focus: Focus::Sidebar,
+        };
+        for _ in 0..100 {
+            demo.handle_event(Event::key_press(KeyCode::Down), &context);
+        }
+        assert_eq!(demo.sidebar.selected(), TOPICS.len() - 1);
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        terminal
+            .draw(|frame| demo.render(frame, frame.area()))
+            .unwrap();
+        assert_eq!(demo.content.topic, TOPICS.len() - 1);
+    }
 }

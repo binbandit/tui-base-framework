@@ -6,12 +6,11 @@ use crate::tui::terminal::{TerminalConfig, TerminalGuard};
 use anyhow::{Context as AnyhowContext, Result};
 use crossterm::event;
 use std::sync::{
-    Arc,
+    Arc, Mutex, MutexGuard,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 type RuntimeEvent = Result<Event>;
@@ -36,7 +35,7 @@ pub fn run<C: Component>(component: C) -> Result<()> {
 /// Like [`run`], with a custom [`AppConfig`].
 pub fn run_with_config<C: Component>(component: C, config: AppConfig) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_time()
+        .enable_all()
         .build()
         .context("build tokio runtime")?;
 
@@ -50,7 +49,9 @@ pub struct AppConfig {
     /// How often [`Event::Tick`] fires. Lower it for smoother animation.
     pub tick_rate: Duration,
     /// How long the input thread blocks waiting for terminal input before
-    /// checking for shutdown. Rarely needs tuning.
+    /// checking for shutdown. Also bounds shutdown and inline redraw latency;
+    /// keep this short. Inline apps also cap this at `tick_rate` so animation
+    /// draws need not wait longer than one tick. Zero uses the default of 50 ms.
     pub input_poll_rate: Duration,
     /// Capacity of the event and message channels.
     pub channel_capacity: usize,
@@ -95,7 +96,7 @@ impl AppConfig {
 
 /// Owns the terminal and drives a [`Component`].
 ///
-/// Construction puts the terminal into raw mode and the alternate screen;
+/// Construction puts the terminal into raw mode and the configured viewport;
 /// dropping the `App` (or panicking) restores it.
 pub struct App<C>
 where
@@ -107,6 +108,7 @@ where
     context: Context<C::Message>,
     message_rx: mpsc::Receiver<C::Message>,
     should_quit: bool,
+    input_lock: Arc<InputGate>,
 }
 
 impl<C> App<C>
@@ -130,6 +132,7 @@ where
             context: Context::new(message_tx),
             message_rx,
             should_quit: false,
+            input_lock: Arc::new(InputGate::default()),
         })
     }
 
@@ -140,27 +143,31 @@ where
     }
 
     /// Runs the app loop until the component quits, Ctrl-C is pressed (when
-    /// enabled), [`Context::fail`] reports an error, or an input error
-    /// occurs.
+    /// enabled), [`Context::fail`] reports an error, or an input error occurs.
+    ///
+    /// Cancelling this future stops and joins its input thread. The terminal
+    /// remains owned by `App` until it is dropped, so `run` can be called again.
     pub async fn run(&mut self) -> Result<()> {
         self.should_quit = false;
         self.context.reset();
 
         let (event_tx, mut event_rx) = mpsc::channel(self.config.channel_capacity());
-        let shutdown = Arc::new(AtomicBool::new(false));
-
-        let input_handle = spawn_input_loop(
-            event_tx.clone(),
-            self.config.input_poll_rate(),
-            shutdown.clone(),
-        );
-        let tick_handle = tokio::spawn(tick_loop(event_tx, self.config.tick_rate()));
+        // The reader joins on drop, including when this future is cancelled.
+        // A new run can never race an old reader for terminal input.
+        let input = InputReader::spawn(
+            event_tx,
+            match self.config.terminal.viewport {
+                crate::tui::terminal::Viewport::Inline(_) => {
+                    self.config.input_poll_rate().min(self.config.tick_rate())
+                }
+                crate::tui::terminal::Viewport::Fullscreen => self.config.input_poll_rate(),
+            },
+            self.input_lock.clone(),
+            read_terminal_event,
+        )?;
 
         let result = self.render_loop(&mut event_rx).await;
-
-        shutdown.store(true, Ordering::Relaxed);
-        input_handle.abort();
-        tick_handle.abort();
+        drop(input);
 
         result?;
 
@@ -176,13 +183,23 @@ where
         let context = self.context.clone();
         let mut needs_render = true;
 
+        let tick_rate = self.config.tick_rate();
+        let mut ticks =
+            tokio::time::interval_at(tokio::time::Instant::now() + tick_rate, tick_rate);
+        ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut last_tick = Instant::now();
+
         self.component.init(&context);
 
         loop {
             self.drain_queued_work(event_rx, &context, &mut needs_render)?;
 
-            if self.quit_pending(&context) {
-                break;
+            // Fatal initialization/update failures can leave state unsuitable
+            // for rendering. Preserve the error instead of drawing that state.
+            if context.quit_requested()
+                && let Some(error) = context.take_error()
+            {
+                return Err(error);
             }
 
             if needs_render {
@@ -190,12 +207,26 @@ where
                 needs_render = false;
             }
 
+            // Render the final state before exiting, particularly for inline
+            // progress UIs whose final frame remains in the scrollback.
+            if self.quit_pending(&context) {
+                break;
+            }
+
+            // A continuously replenished queue must not monopolize a
+            // single-threaded runtime and starve its background tasks.
+            tokio::task::yield_now().await;
             tokio::select! {
                 event = event_rx.recv() => {
                     match event {
                         Some(event) => self.handle_runtime_event(event, &context, &mut needs_render)?,
-                        None => break,
+                        None => anyhow::bail!("terminal input thread stopped unexpectedly"),
                     }
+                }
+                _ = ticks.tick() => {
+                    let now = Instant::now();
+                    self.handle_event(Event::Tick(now - last_tick), &context, &mut needs_render)?;
+                    last_tick = now;
                 }
                 message = self.message_rx.recv() => {
                     match message {
@@ -210,39 +241,36 @@ where
         Ok(())
     }
 
-    /// Handles every already-queued message and event before rendering, so a
-    /// burst of input results in one redraw instead of one per event.
+    /// Coalesces a bounded batch, alternating messages and input so neither
+    /// a self-sending component nor a busy producer can starve the other.
     fn drain_queued_work(
         &mut self,
         event_rx: &mut mpsc::Receiver<RuntimeEvent>,
         context: &Context<C::Message>,
         needs_render: &mut bool,
     ) -> Result<()> {
-        loop {
-            let mut made_progress = false;
+        for _ in 0..self.config.channel_capacity().min(64) {
+            if self.quit_pending(context) {
+                break;
+            }
 
-            while let Ok(message) = self.message_rx.try_recv() {
-                made_progress = true;
+            let message = self.message_rx.try_recv().ok();
+            let event = event_rx.try_recv().ok();
+            if message.is_none() && event.is_none() {
+                break;
+            }
+
+            if let Some(message) = message {
                 self.handle_message(message, context, needs_render);
-
-                if self.quit_pending(context) {
-                    return Ok(());
-                }
             }
-
-            while let Ok(event) = event_rx.try_recv() {
-                made_progress = true;
+            if self.quit_pending(context) {
+                break;
+            }
+            if let Some(event) = event {
                 self.handle_runtime_event(event, context, needs_render)?;
-
-                if self.quit_pending(context) {
-                    return Ok(());
-                }
-            }
-
-            if !made_progress {
-                return Ok(());
             }
         }
+        Ok(())
     }
 
     fn quit_pending(&mut self, context: &Context<C::Message>) -> bool {
@@ -297,6 +325,9 @@ where
     /// is resumed (e.g. `fg`), then takes the terminal over again.
     #[cfg(unix)]
     fn suspend(&mut self) -> Result<()> {
+        // Inline resume queries stdin for the cursor position. The reader
+        // must not consume that reply (or shell input while suspended).
+        let _input = self.input_lock.pause();
         self.terminal_guard.suspend();
 
         // The whole process stops inside `raise` and continues from here
@@ -317,6 +348,13 @@ where
     }
 
     fn draw(&mut self) -> Result<()> {
+        // Ratatui queries the cursor through stdin when an inline viewport
+        // resizes. Fullscreen draws never need to wait for the input reader.
+        let _input = matches!(
+            self.config.terminal.viewport,
+            crate::tui::terminal::Viewport::Inline(_)
+        )
+        .then(|| self.input_lock.pause());
         let Self {
             terminal_guard,
             component,
@@ -332,57 +370,126 @@ where
     }
 }
 
-fn spawn_input_loop(
-    event_tx: mpsc::Sender<RuntimeEvent>,
-    input_poll_rate: Duration,
-    shutdown: Arc<AtomicBool>,
-) -> JoinHandle<()> {
-    tokio::task::spawn_blocking(move || {
-        while !shutdown.load(Ordering::Relaxed) {
-            match event::poll(input_poll_rate) {
-                Ok(true) => match event::read() {
-                    Ok(event) if event.is_key_release() => {}
-                    Ok(event) => {
-                        if event_tx.blocking_send(Ok(Event::from(event))).is_err() {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        let _ = event_tx.blocking_send(Err(error).context("read terminal event"));
-                        break;
-                    }
-                },
-                Ok(false) => {}
-                Err(error) => {
-                    let _ = event_tx.blocking_send(Err(error).context("poll terminal events"));
-                    break;
-                }
-            }
-        }
-    })
+/// A pause flag prevents the reader immediately reacquiring the mutex while
+/// a draw or resume is waiting to query stdin. The mutex waits out any read
+/// already in progress; the flag alone would leave that race open.
+#[derive(Default)]
+struct InputGate {
+    paused: AtomicBool,
+    lock: Mutex<()>,
 }
 
-async fn tick_loop(event_tx: mpsc::Sender<RuntimeEvent>, tick_rate: Duration) {
-    let mut interval = tokio::time::interval(tick_rate);
-    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    interval.tick().await;
-
-    let mut last_delivered = Instant::now();
-
-    loop {
-        interval.tick().await;
-
-        // Drop the tick instead of queueing it when the UI is busy, so stale
-        // animation ticks never pile up into delayed redraws. Elapsed time
-        // keeps accruing until a tick is actually delivered, so animations
-        // scaled by it stay wall-clock accurate across dropped ticks.
-        let now = Instant::now();
-        match event_tx.try_send(Ok(Event::Tick(now - last_delivered))) {
-            Ok(()) => last_delivered = now,
-            Err(mpsc::error::TrySendError::Full(_)) => {}
-            Err(mpsc::error::TrySendError::Closed(_)) => break,
+impl InputGate {
+    fn pause(&self) -> InputPause<'_> {
+        self.paused.store(true, Ordering::Relaxed);
+        InputPause {
+            gate: self,
+            _lock: self.lock.lock().unwrap_or_else(|e| e.into_inner()),
         }
     }
+}
+
+struct InputPause<'a> {
+    gate: &'a InputGate,
+    _lock: MutexGuard<'a, ()>,
+}
+
+impl Drop for InputPause<'_> {
+    fn drop(&mut self) {
+        self.gate.paused.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Owns the input thread so cancellation cannot detach it. Unlike a Tokio
+/// blocking task, a started OS thread cannot be stopped with `abort()`.
+struct InputReader {
+    shutdown: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl InputReader {
+    fn spawn(
+        event_tx: mpsc::Sender<RuntimeEvent>,
+        poll_rate: Duration,
+        input_lock: Arc<InputGate>,
+        mut read: impl FnMut(Duration) -> Result<Option<Event>> + Send + 'static,
+    ) -> Result<Self> {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stopped = shutdown.clone();
+        let thread = std::thread::Builder::new()
+            .name("terminal-input".into())
+            .spawn(move || {
+                while !stopped.load(Ordering::Relaxed) {
+                    let next = {
+                        if input_lock.paused.load(Ordering::Relaxed) {
+                            std::thread::park_timeout(Duration::from_millis(1));
+                            continue;
+                        }
+                        let _input = input_lock.lock.lock().unwrap_or_else(|e| e.into_inner());
+                        if stopped.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if input_lock.paused.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        read(poll_rate)
+                    };
+                    let next = match next {
+                        Ok(Some(event)) => Ok(event),
+                        Ok(None) => continue,
+                        Err(error) => Err(error),
+                    };
+                    let failed = next.is_err();
+                    if !send_input(&event_tx, next, &stopped) || failed {
+                        break;
+                    }
+                }
+            })
+            .context("start terminal input thread")?;
+        Ok(Self {
+            shutdown,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for InputReader {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            // Shutdown is bounded by poll_rate. Joining is necessary even on
+            // cancellation: terminal restoration and the next run must happen
+            // after the last read, not while it is still in flight.
+            let _ = thread.join();
+        }
+    }
+}
+
+fn read_terminal_event(poll_rate: Duration) -> Result<Option<Event>> {
+    if !event::poll(poll_rate).context("poll terminal events")? {
+        return Ok(None);
+    }
+    let event = event::read().context("read terminal event")?;
+    Ok((!event.is_key_release()).then(|| Event::from(event)))
+}
+
+fn send_input(
+    sender: &mpsc::Sender<RuntimeEvent>,
+    mut event: RuntimeEvent,
+    shutdown: &AtomicBool,
+) -> bool {
+    // blocking_send cannot be cancelled while the queue is full. Keep the
+    // event under backpressure, but let shutdown wake the thread promptly.
+    while !shutdown.load(Ordering::Relaxed) {
+        match sender.try_send(event) {
+            Ok(()) => return true,
+            Err(mpsc::error::TrySendError::Closed(_)) => return false,
+            Err(mpsc::error::TrySendError::Full(pending)) => event = pending,
+        }
+        std::thread::park_timeout(Duration::from_millis(1));
+    }
+    false
 }
 
 fn non_zero_duration(value: Duration, fallback: Duration) -> Duration {
@@ -391,8 +498,143 @@ fn non_zero_duration(value: Duration, fallback: Duration) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, non_zero_duration};
+    use super::{AppConfig, InputGate, InputReader, non_zero_duration};
+    use crate::tui::Event;
+    use crossterm::event::KeyCode;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc as sync_mpsc,
+    };
     use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    struct Stopped(Arc<AtomicBool>);
+
+    impl Drop for Stopped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn input_shutdown_does_not_wait_for_a_full_channel_to_drain() {
+        let (sender, _receiver) = mpsc::channel(1);
+        sender
+            .try_send(Ok(Event::key_press(KeyCode::Char('a'))))
+            .unwrap();
+        let (reading, read_started) = sync_mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let marker = Stopped(stopped.clone());
+        let reader = InputReader::spawn(
+            sender,
+            Duration::from_millis(1),
+            Arc::new(InputGate::default()),
+            move |_| {
+                let _keep_alive = &marker;
+                reading.send(()).unwrap();
+                Ok(Some(Event::key_press(KeyCode::Char('b'))))
+            },
+        )
+        .unwrap();
+        read_started.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let (finished, completion) = sync_mpsc::channel();
+        std::thread::spawn(move || {
+            drop(reader);
+            finished.send(()).unwrap();
+        });
+        completion
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader shutdown must not wait for channel capacity");
+        assert!(stopped.load(Ordering::Relaxed), "drop joins the reader");
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_run_joins_its_input_reader() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let marker = Stopped(stopped.clone());
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let run = tokio::spawn(async move {
+            let _reader = InputReader::spawn(
+                sender,
+                Duration::from_millis(1),
+                Arc::new(InputGate::default()),
+                move |poll_rate| {
+                    let _keep_alive = &marker;
+                    std::thread::sleep(poll_rate);
+                    Ok(None)
+                },
+            )
+            .unwrap();
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        ready.await.unwrap();
+        run.abort();
+        assert!(run.await.unwrap_err().is_cancelled());
+        assert!(stopped.load(Ordering::Relaxed));
+        assert!(
+            receiver.recv().await.is_none(),
+            "old sender is gone before another run starts"
+        );
+    }
+
+    #[test]
+    fn input_backpressure_preserves_order_and_reports_errors() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut keys = ['a', 'b', 'c'].into_iter();
+        let reader = InputReader::spawn(
+            sender,
+            Duration::from_millis(1),
+            Arc::new(InputGate::default()),
+            move |_| match keys.next() {
+                Some(key) => Ok(Some(Event::key_press(KeyCode::Char(key)))),
+                None => anyhow::bail!("input disconnected"),
+            },
+        )
+        .unwrap();
+        for expected in ['a', 'b', 'c'] {
+            assert!(
+                receiver
+                    .blocking_recv()
+                    .unwrap()
+                    .unwrap()
+                    .is_key(KeyCode::Char(expected))
+            );
+        }
+        assert_eq!(
+            receiver.blocking_recv().unwrap().unwrap_err().to_string(),
+            "input disconnected"
+        );
+        assert!(receiver.blocking_recv().is_none());
+        drop(reader);
+    }
+
+    #[test]
+    fn paused_input_cannot_read_and_can_still_shut_down() {
+        let gate = Arc::new(InputGate::default());
+        let paused = gate.pause();
+        let (sender, _receiver) = mpsc::channel(1);
+        let (reading, read_started) = sync_mpsc::channel();
+        let reader =
+            InputReader::spawn(sender, Duration::from_millis(1), gate.clone(), move |_| {
+                reading.send(()).unwrap();
+                Ok(None)
+            })
+            .unwrap();
+        assert!(matches!(
+            read_started.recv_timeout(Duration::from_millis(20)),
+            Err(sync_mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(reader);
+        assert!(matches!(
+            read_started.try_recv(),
+            Err(sync_mpsc::TryRecvError::Disconnected)
+        ));
+        drop(paused);
+    }
 
     #[test]
     fn app_config_never_uses_a_zero_sized_channel() {

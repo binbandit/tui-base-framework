@@ -1,6 +1,6 @@
 # TUI Framework Cheat Sheet
 
-Copy-paste reference for common tasks. Everything here compiles against the template as-is.
+Copy-paste reference for common tasks using the template API. Snippets with `MyApp`, domain fields, or helpers such as `load_data` belong inside your corresponding app code; the examples are complete runnable programs.
 
 ## Imports
 
@@ -249,7 +249,10 @@ impl Component for MyApp {
 Send:
 
 ```rust
-let _ = context.try_send(AppMessage::Saved);
+if let Err(error) = context.try_send(AppMessage::Saved) {
+    // This example treats a lost message as fatal; a real app can show a retry.
+    context.fail(anyhow::anyhow!("queue message: {error}"));
+}
 ```
 
 Receive — messages arrive fully typed, no downcasting:
@@ -278,7 +281,7 @@ fn init(&mut self, context: &Context<AppMessage>) {
 
 ## Errors
 
-Recoverable errors are messages — send them and render the failure. Fatal errors go through `Context::fail`, which restores the terminal and returns the error from `run`:
+Recoverable errors are messages — send them and render the failure. Fatal errors go through `Context::fail`, which returns the error from `run`. The convenience function restores the terminal; when driving `App` directly, drop it before printing:
 
 ```rust
 fn init(&mut self, context: &Context<AppMessage>) {
@@ -341,7 +344,7 @@ let widget = List::new(items)
 frame.render_stateful_widget(widget, area, &mut self.state);
 ```
 
-Navigate with `self.state.select_next()` / `self.state.select_previous()`.
+For a display-only selection, `ListState::select_next()` / `select_previous()` defer bounds checks until rendering. If handlers use the selected index before the next frame, clamp it to the item count yourself; see `examples/list_selector.rs` and `examples/screens.rs`.
 
 ### Gauge
 
@@ -372,7 +375,7 @@ if let Some(c) = event.char() {
 
 match event {
     Event::Paste(text) => {
-        self.input.push_str(&text);
+        self.input.extend(text.chars().filter(|c| !c.is_control()));
         EventResult::Consumed
     }
     Event::Key(key) => match key.code {

@@ -1,6 +1,6 @@
 //! Terminal setup and RAII cleanup.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{
@@ -15,7 +15,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, TerminalOptions, backend::CrosstermBackend};
 use std::io::{self, Stdout};
-use std::sync::Once;
+use std::sync::{Mutex, MutexGuard, Once};
 
 /// The concrete Ratatui terminal type used by this template.
 pub type TerminalType = Terminal<CrosstermBackend<Stdout>>;
@@ -72,6 +72,7 @@ impl Default for TerminalConfig {
 pub struct TerminalGuard {
     terminal: TerminalType,
     config: TerminalConfig,
+    _ownership: TerminalOwnership,
 }
 
 impl TerminalGuard {
@@ -81,26 +82,37 @@ impl TerminalGuard {
     }
 
     /// Takes over the terminal with the given feature set.
+    ///
+    /// Returns an error if another guard is alive or an inline height is zero.
     pub fn with_config(config: TerminalConfig) -> Result<Self> {
+        ensure!(
+            config.viewport != Viewport::Inline(0),
+            "inline viewport height must be positive"
+        );
+        let ownership = TerminalOwnership::acquire()?;
         install_panic_hook();
+        let terminal = Self::activate(config)?;
 
-        enable_raw_mode().context("enable terminal raw mode")?;
+        Ok(Self {
+            terminal,
+            config,
+            _ownership: ownership,
+        })
+    }
 
-        let mut stdout = io::stdout();
-        if let Err(error) = Self::enter_terminal(&mut stdout, config) {
+    fn activate(config: TerminalConfig) -> Result<TerminalType> {
+        // Record the configuration before the first side effect so errors and
+        // panics both roll back even a partially completed setup.
+        terminal_state().active = Some(config);
+        let result = (|| {
+            enable_raw_mode().context("enable terminal raw mode")?;
+            Self::enter_terminal(io::stdout(), config).context("enter terminal")?;
+            Self::build_terminal(config)
+        })();
+        if result.is_err() {
             restore_terminal();
-            return Err(error).context("enter terminal");
         }
-
-        let terminal = match Self::build_terminal(config) {
-            Ok(terminal) => terminal,
-            Err(error) => {
-                restore_terminal();
-                return Err(error);
-            }
-        };
-
-        Ok(Self { terminal, config })
+        result
     }
 
     /// Access the underlying Ratatui terminal.
@@ -120,16 +132,18 @@ impl TerminalGuard {
     }
 
     /// Takes the terminal over again after [`TerminalGuard::suspend`] and
-    /// forces a full repaint on the next draw.
+    /// forces a full repaint on the next draw. Repeated calls while active do
+    /// nothing. On failure the terminal remains handed back to the shell.
+    ///
+    /// Pause other terminal input readers first: inline setup queries stdin.
     pub fn resume(&mut self) -> Result<()> {
-        enable_raw_mode().context("re-enable terminal raw mode")?;
-        Self::enter_terminal(&mut io::stdout(), self.config).context("re-enter terminal")?;
+        if terminal_state().active.is_some() {
+            return Ok(());
+        }
 
-        // Rebuild rather than reuse the ratatui terminal: this re-anchors an
-        // inline viewport at the current cursor position (whatever ran while
-        // suspended has scrolled the screen) and starts from empty buffers so
-        // the next draw repaints everything.
-        self.terminal = Self::build_terminal(self.config)?;
+        // Rebuild to re-anchor inline viewports after shell output and start
+        // with empty buffers for a full repaint. Activation rolls back on error.
+        self.terminal = Self::activate(self.config)?;
         Ok(())
     }
 
@@ -180,18 +194,23 @@ impl TerminalGuard {
     /// and finish with a newline — the next prompt starts below the UI
     /// instead of overwriting it.
     fn hand_back_terminal(&mut self) {
-        let inline = matches!(self.config.viewport, Viewport::Inline(_));
+        let Some(config) = terminal_state().active.take() else {
+            return;
+        };
 
-        if inline {
+        // Keep Ratatui's cursor tracking in sync so replacing the terminal on
+        // resume does not show the cursor again when the old instance drops.
+        let _ = self.terminal.show_cursor();
+        let mut stdout = io::stdout();
+        if matches!(config.viewport, Viewport::Inline(_)) {
             let area = self.terminal.get_frame().area();
-            let _ = execute!(io::stdout(), MoveTo(0, area.bottom().saturating_sub(1)));
+            let _ = execute!(stdout, MoveTo(0, area.bottom().saturating_sub(1)));
+            // Explicit CRLF works in raw mode and avoids println!'s panic on
+            // broken output while this method is already unwinding.
+            let _ = io::Write::write_all(&mut stdout, b"\r\n");
         }
-
-        restore_terminal();
-
-        if inline {
-            println!();
-        }
+        leave_terminal(stdout, config);
+        let _ = disable_raw_mode();
     }
 }
 
@@ -201,19 +220,69 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// Undoes everything [`TerminalGuard`] set up. Safe to call more than once;
-/// terminals ignore the disable sequences when the feature is not active.
+// The terminal and panic hook are process-wide. A second live guard would
+// otherwise restore the first one's terminal when it fails or drops.
+struct TerminalState {
+    owned: bool,
+    active: Option<TerminalConfig>,
+}
+
+fn terminal_state() -> MutexGuard<'static, TerminalState> {
+    static STATE: Mutex<TerminalState> = Mutex::new(TerminalState {
+        owned: false,
+        active: None,
+    });
+    STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+struct TerminalOwnership;
+
+impl TerminalOwnership {
+    fn acquire() -> Result<Self> {
+        let mut state = terminal_state();
+        ensure!(
+            !state.owned,
+            "another TerminalGuard already owns the terminal"
+        );
+        state.owned = true;
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalOwnership {
+    fn drop(&mut self) {
+        restore_terminal();
+        terminal_state().owned = false;
+    }
+}
+
+/// Claims cleanup exactly once, including when the panic hook runs before Drop.
 fn restore_terminal() {
-    let mut stdout = io::stdout();
-    let _ = execute!(
-        stdout,
-        Show,
-        DisableFocusChange,
-        DisableBracketedPaste,
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    );
-    let _ = disable_raw_mode();
+    let config = terminal_state().active.take();
+    if let Some(config) = config {
+        leave_terminal(io::stdout(), config);
+        let _ = disable_raw_mode();
+    }
+}
+
+fn leave_terminal(mut stdout: impl io::Write, config: TerminalConfig) {
+    // Try every restoration step even if an earlier write fails. Only undo
+    // features this guard enabled; inline mode never entered an alternate screen.
+    let _ = execute!(stdout, Show);
+    if config.focus_change {
+        let _ = execute!(stdout, DisableFocusChange);
+    }
+    if config.bracketed_paste {
+        let _ = execute!(stdout, DisableBracketedPaste);
+    }
+    if config.mouse_capture {
+        let _ = execute!(stdout, DisableMouseCapture);
+    }
+    if matches!(config.viewport, Viewport::Fullscreen) {
+        let _ = execute!(stdout, LeaveAlternateScreen);
+    }
 }
 
 /// Restores the terminal before the default panic handler prints, so the
@@ -229,4 +298,97 @@ fn install_panic_hook() {
             original(info);
         }));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    use super::leave_terminal;
+    use super::{TerminalConfig, TerminalGuard, TerminalOwnership, Viewport};
+    #[cfg(unix)]
+    use std::io::{self, Write};
+
+    #[test]
+    fn ownership_is_exclusive_until_the_guard_is_dropped() {
+        let ownership = TerminalOwnership::acquire().unwrap();
+        assert!(TerminalOwnership::acquire().is_err());
+        drop(ownership);
+        assert!(TerminalOwnership::acquire().is_ok());
+    }
+
+    #[test]
+    fn zero_height_is_rejected_before_touching_the_terminal() {
+        let result = TerminalGuard::with_config(TerminalConfig {
+            viewport: Viewport::Inline(0),
+            ..TerminalConfig::default()
+        });
+        assert!(result.is_err_and(|error| error.to_string().contains("height must be positive")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inline_cleanup_preserves_screen_and_disabled_features() {
+        let mut output = Vec::new();
+        leave_terminal(
+            &mut output,
+            TerminalConfig {
+                viewport: Viewport::Inline(3),
+                bracketed_paste: false,
+                ..TerminalConfig::default()
+            },
+        );
+        assert_eq!(output, b"\x1b[?25h");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fullscreen_cleanup_restores_enabled_features() {
+        let mut output = Vec::new();
+        leave_terminal(
+            &mut output,
+            TerminalConfig {
+                focus_change: true,
+                mouse_capture: true,
+                ..TerminalConfig::default()
+            },
+        );
+        let output = String::from_utf8(output).unwrap();
+        for sequence in [
+            "\x1b[?25h",
+            "\x1b[?1004l",
+            "\x1b[?2004l",
+            "\x1b[?1000l",
+            "\x1b[?1049l",
+        ] {
+            assert!(output.contains(sequence), "missing {sequence:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_continues_after_a_write_failure() {
+        #[derive(Default)]
+        struct FailFirstWrite {
+            failed: bool,
+            output: Vec<u8>,
+        }
+        impl Write for FailFirstWrite {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if !self.failed {
+                    self.failed = true;
+                    return Err(io::Error::other("first write failed"));
+                }
+                self.output.write(bytes)
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = FailFirstWrite::default();
+        leave_terminal(&mut output, TerminalConfig::default());
+        let output = String::from_utf8(output.output).unwrap();
+        assert!(output.contains("\x1b[?2004l"));
+        assert!(output.contains("\x1b[?1049l"));
+    }
 }

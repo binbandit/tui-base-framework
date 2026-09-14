@@ -32,7 +32,7 @@ cargo run
 ./setup.sh my-tui-app --app-only     # binary-only app: no lib.rs, no examples
 ```
 
-`--app-only` is the right choice when you're building an application: it folds the framework into your binary as a plain `src/tui/` module — no library target, nothing published, just your app. The script verifies the result with `cargo check` and deletes itself when done. (`--no-examples`, `--fresh-git`, and `--yes` for non-interactive use are also available; run `./setup.sh --help`.)
+`--app-only` is the right choice when you're building an application: it folds the framework into your binary as a plain `src/tui/` module — no library target, nothing published, just your app. The script formats and verifies the result with `cargo check`, removes template-only CI checks, and deletes itself when done. If verification fails, fix the error and rerun it with the same project name and flags. (`--no-examples`, `--fresh-git`, and `--yes` for non-interactive use are also available; run `./setup.sh --help`.)
 
 On Windows, run `setup.sh` from Git Bash (it ships with Git for Windows) or WSL. The apps themselves build and run natively on Windows — CI checks every push there too.
 
@@ -183,7 +183,7 @@ Components that don't need messages use `type Message = ();`.
 
 ```rust
 context.quit();                        // ask the loop to exit
-let _ = context.try_send(Msg::Saved);  // deliver a message to update()
+let result = context.try_send(Msg::Saved); // handle a full/closed channel if delivery matters
 let sender = context.sender();         // clone a sender for background tasks
 ```
 
@@ -241,11 +241,11 @@ fn render(&mut self, frame: &mut Frame, area: Rect) {
 }
 ```
 
-See `examples/text_input.rs` for a complete input field with a live cursor.
+See `examples/text_input.rs` for a single-line input field with horizontal scrolling and a cursor that stays inside the visible field. Pasted control characters are removed; backspace removes one Unicode scalar.
 
 ### Errors
 
-Recoverable errors are ordinary data: send them as a message and render the failure. For fatal errors, `Context::fail` stops the app, restores the terminal, and returns the error from `run`:
+Recoverable errors are ordinary data: send them as a message and render the failure. For fatal errors, `Context::fail` stops the app and returns the error from `run`. The convenience `run` function drops the app and restores the terminal before returning; when using `App` directly, drop it before printing to the terminal:
 
 ```rust
 let context = context.clone();
@@ -289,7 +289,7 @@ Mouse capture and focus change are opt-in because they change normal terminal be
 
 By default the app quits on Ctrl-C and suspends to the shell on Ctrl-Z (resuming cleanly on `fg` — Unix only; on Windows Ctrl-Z reaches the component like any other key). Your component always sees the key press first: consume it to override the default, e.g. to show a "really quit?" confirmation on Ctrl-C. Set `quit_on_ctrl_c: false` / `suspend_on_ctrl_z: false` to take over entirely.
 
-The same primitives are public: if you own the terminal directly through `TerminalGuard` (instead of `run`), `suspend()` / `resume()` hand the terminal to a subprocess (`$EDITOR`, a pager) and take it back with a full repaint.
+The same primitives are public: if you own the terminal directly through `TerminalGuard` (instead of `run`), `suspend()` / `resume()` hand the terminal to a subprocess (`$EDITOR`, a pager) and take it back with a full repaint. Pause any input reader before doing so, because inline setup queries stdin. Only one guard may exist at a time; repeated suspend or resume calls are harmless, and failed setup or resume restores the terminal.
 
 ### Inline Apps
 
@@ -302,7 +302,7 @@ terminal: TerminalConfig {
 },
 ```
 
-Inline setup locates the viewport by querying the cursor position, so it needs a real interactive terminal (not a pipe or CI).
+Inline heights must be positive. Inline redraws synchronize with the input reader; its polling wait is capped at the smaller of `input_poll_rate` and `tick_rate`. Inline setup locates the viewport by querying the cursor position, so it needs a real interactive terminal (not a pipe or CI).
 
 ## Examples
 
@@ -312,7 +312,7 @@ Each example is one self-contained file you can read top to bottom and copy over
 | --- | --- |
 | `hello_world` | Basic rendering and quit handling |
 | `counter` | Mutable state and keyboard input |
-| `text_input` | Character input with a real terminal cursor, paste handling |
+| `text_input` | Single-line input, horizontal scrolling, cursor and paste handling |
 | `list_selector` | Stateful `List` widget with `ListState` navigation |
 | `layout_demo` | Nested Ratatui layouts |
 | `tabs` | View switching |
@@ -423,8 +423,8 @@ The starter `src/main.rs` ships with working tests in this style — `cargo test
 
 The runtime is built to be efficient by default:
 
-- Event-driven rendering: the app redraws after handled events/messages instead of repainting every frame, and coalesces bursts of input into a single redraw.
-- Blocking terminal input is isolated in a blocking task, so it does not park Tokio worker threads.
+- Event-driven rendering: the app redraws after handled events/messages instead of repainting every frame, and coalesces bounded batches of messages and input into one redraw, so busy producers cannot prevent painting or quit handling.
+- Blocking terminal input runs on a dedicated thread. The app joins it on exit or cancellation so an old reader cannot steal input from the next run.
 - Messages are statically typed — no boxing or runtime downcasts on the message path.
 - The app is generic over your component type, avoiding heap allocation and dynamic dispatch unless you box a component yourself.
 - Stale animation ticks are dropped when the UI is busy, so background ticks do not build up into delayed redraws — and `Event::Tick` carries the real elapsed time, so animations stay accurate across drops.
@@ -441,9 +441,9 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow builds optimized binaries for Linux (x86_64, arm64), macOS (Apple Silicon, Intel), and Windows, and attaches them to a GitHub release with generated notes. The binary name is read from `Cargo.toml`, so it works unchanged after `setup.sh` renames your project. Release builds use thin LTO, a single codegen unit, and stripped symbols — the starter app comes out under 1 MB.
+The release workflow builds optimized binaries for Linux (x86_64, arm64), macOS (Apple Silicon, Intel), and Windows, and attaches them to a draft GitHub release with generated notes. The release is published after every platform build and upload succeeds. The binary name is read from `Cargo.toml`, so it works unchanged after `setup.sh` renames your project. Release builds use thin LTO, a single codegen unit, and stripped symbols.
 
-Dependabot is configured to open weekly grouped PRs for Cargo dependencies and GitHub Actions, so the project stays current after you fork off.
+Dependabot is configured to open weekly grouped PRs for Cargo dependencies and GitHub Actions, so the project stays current after you fork off. CI also runs `cargo audit --deny warnings`, including advisories marked as unsound. GitHub Actions are pinned to commit hashes that Dependabot can update.
 
 ## Troubleshooting
 
@@ -461,7 +461,7 @@ If the UI does not redraw after input, make sure the component returns `EventRes
 - `crossterm` 0.29 for terminal input/control
 - `tokio` 1.x with minimal runtime features
 - `anyhow` 1.0 for ergonomic error handling
-- `signal-hook` 0.3 (Unix only) to raise SIGTSTP for Ctrl-Z suspend without `unsafe`
+- `signal-hook` 0.4 (Unix only) to raise SIGTSTP for Ctrl-Z suspend without `unsafe`
 
 The minimum supported Rust version is declared as `rust-version` in `Cargo.toml` (currently **1.94**, edition 2024); CI reads it from there and checks it on every push. `Cargo.lock` is tracked because this is an application template. New projects get reproducible example builds immediately, then can update dependencies on their own cadence (`cargo update`).
 

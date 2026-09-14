@@ -4,8 +4,12 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: -D warnings
 
 jobs:
   test:
@@ -20,37 +24,44 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Check
-        run: cargo check --all-targets
+        run: cargo check --all-targets --locked
 
       - name: Test
-        run: cargo test --all-targets
+        run: cargo test --all-targets --locked
 
       - name: Doc tests
-        run: cargo test --doc
+        if: hashFiles('src/lib.rs') != ''
+        run: cargo test --doc --locked
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Docs
-        run: cargo doc --no-deps
+        run: cargo doc --no-deps --locked
 
+      # template-only:start
       - name: Shellcheck setup script
         if: runner.os == 'Linux'
-        run: shellcheck setup.sh
+        run: shellcheck setup.sh scripts/test-setup.sh
+      - name: Runtime terminal regressions
+        if: runner.os == 'Linux'
+        run: python3 scripts/test-runtime.py
+      # template-only:end
 
   msrv:
     name: MSRV
@@ -58,7 +69,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Read the MSRV from Cargo.toml so it can never drift from CI.
       - name: Read MSRV from Cargo.toml
@@ -66,16 +77,17 @@ jobs:
         run: echo "msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust ${{ steps.msrv.outputs.msrv }}
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: ${{ steps.msrv.outputs.msrv }}
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Check
-        run: cargo check --all-targets
+        run: cargo check --all-targets --locked
 
+  # template-only:start
   setup-script:
     name: Setup script (${{ matrix.mode.name }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -93,15 +105,23 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Setup regression tests
+        run: bash scripts/test-setup.sh
+
+      - name: Runtime terminal regressions
+        if: runner.os == 'macOS' && matrix.mode.name == 'rename'
+        run: python3 scripts/test-runtime.py
 
       - name: Run setup.sh
         run: ./setup.sh my-test-app ${{ matrix.mode.flags }} --yes
@@ -109,7 +129,25 @@ jobs:
       - name: Lint result
         run: |
           cargo fmt --all -- --check
-          cargo clippy --all-targets -- -D warnings
+          cargo clippy --locked --all-targets -- -D warnings
 
       - name: Test result
-        run: cargo test --all-targets
+        run: cargo test --all-targets --locked
+  # template-only:end
+
+  security:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+      - name: Check advisories (including unsound dependencies)
+        run: cargo audit --deny warnings

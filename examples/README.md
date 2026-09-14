@@ -35,7 +35,7 @@ All examples support `q` or Esc to quit (`text_input` uses Esc only, so `q` stay
 | --- | --- | --- |
 | `hello_world` | Basic render and quit handling | `q` |
 | `counter` | State updates from keyboard events | Up/down, `q` |
-| `text_input` | Character input, real terminal cursor, paste | Type, Backspace, Enter, Esc |
+| `text_input` | Single-line input, horizontal scrolling, cursor and paste | Type, Backspace, Enter, Esc |
 | `list_selector` | Stateful `List` widget with `ListState` | Up/down, `q` |
 | `layout_demo` | Header/body/footer and nested layout splits | `q` |
 | `tabs` | View switching with Ratatui tabs | Left/right, Tab, `q` |
