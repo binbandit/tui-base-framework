@@ -17,6 +17,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
+      fail-fast: false
       matrix:
         # Windows is in the matrix because the framework cfg-gates Unix-only
         # code (Ctrl-Z suspend); this catches breakage on both sides.
@@ -57,7 +58,7 @@ jobs:
       # template-only:start
       - name: Shellcheck setup script
         if: runner.os == 'Linux'
-        run: shellcheck setup.sh scripts/test-setup.sh
+        run: shellcheck --norc setup.sh scripts/test-setup.sh
       - name: Runtime terminal regressions
         if: runner.os == 'Linux'
         run: python3 scripts/test-runtime.py
@@ -93,6 +94,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
+      fail-fast: false
       matrix:
         # macOS ships BSD userland (sed/awk/find), so running the matrix there
         # catches GNU-only shell constructs before users on Macs do.

@@ -55,7 +55,7 @@ cargo test --all-targets
 cargo test --doc
 cargo clippy --all-targets --all-features -- -D warnings
 cargo doc --no-deps
-shellcheck setup.sh scripts/test-setup.sh
+shellcheck --norc setup.sh scripts/test-setup.sh
 bash scripts/test-setup.sh
 python3 scripts/test-runtime.py # Unix PTY integration tests
 cargo audit --deny warnings

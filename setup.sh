@@ -91,7 +91,7 @@ case "$IDENT" in
     std|core|alloc|anyhow|crossterm|ratatui|tokio|signal_hook)
         err "'$NAME' collides with a crate used by the template; pick another" ;;
 esac
-[ -f Cargo.toml ] && [ -f src/main.rs ] && [ -d src/tui ] \
+[[ -f Cargo.toml && -f src/main.rs && -d src/tui ]] \
     || err "run setup from a complete template checkout"
 grep -Eq "^name = \"($OLD_PKG|$NAME)\"$" Cargo.toml \
     || err "this project was already renamed; retry with its current name"
@@ -116,7 +116,7 @@ if ! $ASSUME_YES && ! $FRESH_GIT && [ -d .git ]; then
 fi
 if $FRESH_GIT; then
     command -v git >/dev/null 2>&1 || err "--fresh-git requires git"
-    [ ! -f .git ] && [ ! -L .git ] \
+    [[ ! -f .git && ! -L .git ]] \
         || err "--fresh-git cannot be used in a linked worktree or submodule"
     if ! git var GIT_AUTHOR_IDENT >/dev/null 2>&1 \
         || ! git var GIT_COMMITTER_IDENT >/dev/null 2>&1; then

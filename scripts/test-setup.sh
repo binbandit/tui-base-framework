@@ -65,21 +65,21 @@ printf 'keep me\n' > "$CASE/notes.bak"
 printf 'keep me too\n' > "$CASE/src/tui/user.bak"
 run_setup my-test-app --yes
 assert_clean
-[ -f "$CASE/src/lib.rs" ] && [ -d "$CASE/examples" ] || fail 'rename removed library/examples'
+[[ -f "$CASE/src/lib.rs" && -d "$CASE/examples" ]] || fail 'rename removed library/examples'
 [ "$(cat "$CASE/notes.bak")" = 'keep me' ] || fail 'deleted unrelated root backup'
 [ "$(cat "$CASE/src/tui/user.bak")" = 'keep me too' ] || fail 'deleted unrelated nested backup'
 
 fixture app-only
 run_setup my-test-app --app-only --yes
 assert_clean
-[ ! -f "$CASE/src/lib.rs" ] && [ ! -d "$CASE/examples" ] || fail 'app-only kept library/examples'
+[[ ! -f "$CASE/src/lib.rs" && ! -d "$CASE/examples" ]] || fail 'app-only kept library/examples'
 [ "$(grep -c '^mod tui;' "$CASE/src/main.rs")" = 1 ] || fail 'module declaration missing/duplicated'
 if grep -R 'my_test_app::' "$CASE/src" "$CASE/"*.md; then fail 'stale app-only import paths'; fi
 
 fixture no-examples
 run_setup my-test-app --no-examples --yes
 assert_clean
-[ -f "$CASE/src/lib.rs" ] && [ ! -d "$CASE/examples" ] || fail 'no-examples removed wrong files'
+[[ -f "$CASE/src/lib.rs" && ! -d "$CASE/examples" ]] || fail 'no-examples removed wrong files'
 
 fixture invalid-names
 cp "$CASE/Cargo.toml" "$SCRATCH/original.toml"
